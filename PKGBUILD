@@ -11,7 +11,7 @@
 # Build with:
 #   makepkg -si
 
-pkgname=niri-electron-share
+pkgname=niri-shm-git
 # v26.04 was tagged 2026-04-25; the pinned upstream commit is 161 commits
 # later, so call this 26.04.161.gc4c01f82 rather than pretending it is the
 # release itself.
@@ -25,7 +25,7 @@ depends=(cairo gcc-libs glib2 glibc libinput libpipewire libxkbcommon mesa pango
 	 seatd systemd-libs xdg-desktop-portal-gtk)
 makedepends=(clang rust)
 provides=("niri=$pkgver" "niri")
-conflicts=("niri" "niri-shm-git" "niri-shm-sharing")
+conflicts=("niri")
 options=(!debug !lto)
 # Upstream baseline. This is main at 1f03391e, i.e. 161 commits after the
 # v26.04 tag: the patch was written against post-26.04 development, where

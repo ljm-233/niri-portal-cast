@@ -1,9 +1,8 @@
-# niri-electron-share
+# niri-shm
 
 niri 加上让 Electron 客户端（QQ、飞书等）能通过 xdg-desktop-portal 屏幕共享的补丁。
 
-包名 `niri-electron-share`。AUR 上有一个功能部分重叠的 `niri-shm-sharing`，
-区别见下方「与 niri-shm-sharing 的区别」。
+AUR 上有一个功能部分重叠的 `niri-shm-sharing`，区别见下方说明。
 
 ## 为什么需要这个补丁
 
@@ -34,7 +33,7 @@ Release 里有编译好的包：
 https://github.com/ljm-233/niri-shm/releases
 
 ```
-sudo pacman -U niri-electron-share-*.pkg.tar.zst
+sudo pacman -U niri-shm-git-*.pkg.tar.zst
 ```
 
 ## 自己构建
