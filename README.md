@@ -1,6 +1,9 @@
-# niri-shm
+# niri-electron-share
 
 niri 加上让 Electron 客户端（QQ、飞书等）能通过 xdg-desktop-portal 屏幕共享的补丁。
+
+包名 `niri-electron-share`。AUR 上有一个功能部分重叠的 `niri-shm-sharing`，
+区别见下方「与 niri-shm-sharing 的区别」。
 
 ## 为什么需要这个补丁
 
@@ -24,7 +27,17 @@ niri 加上让 Electron 客户端（QQ、飞书等）能通过 xdg-desktop-porta
 - `src/screencasting/pw_utils.rs` — 恢复上游的 dmabuf/shm 分裂路径，固定 30fps，
   并把 shm buffer 池限制在 32 个以内
 
-## 构建
+## 安装现成的包
+
+Release 里有编译好的包：
+
+https://github.com/ljm-233/niri-shm/releases
+
+```
+sudo pacman -U niri-electron-share-*.pkg.tar.zst
+```
+
+## 自己构建
 
 ```
 makepkg -si
@@ -57,6 +70,16 @@ git format-patch -1 --stdout > 新的patch文件
 锁的是具体 commit 而非 tag。
 
 上游 PR #1791 里有类似的 SHM 改动，但截至打包时尚未并入 main。
+
+## 与 niri-shm-sharing 的区别
+
+AUR 上的 `niri-shm-sharing` 同样给 niri 打SHM 补丁，区别在于：
+
+- 它只处理了 shmem fallback，没有宣告 `AvailableSourceTypes` 和
+  `AvailableCursorModes`。缺了这两项，`xdg-desktop-portal-gnome` 会报告零能力
+  并拒绝所有 `SelectSources` 调用，表现为选择框里只有「整个屏幕」。
+- 它没有采集帧率上限。
+- 它 pin 在 `8ed0da44`，比这里的基线旧。
 
 ## 许可证
 
