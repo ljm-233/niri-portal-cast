@@ -17,7 +17,7 @@ pkgname=niri-shm-git
 # release itself.
 pkgver=26.04.161.gc4c01f82
 pkgrel=1
-pkgdesc="Scrollable-tiling Wayland compositor with SHM screencasting patches"
+pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen sharing works with Electron clients"
 arch=(aarch64 x86_64)
 url="https://github.com/ljm-233/niri-shm"
 license=(GPL-3.0-or-later)
@@ -44,14 +44,20 @@ b2sums=('SKIP')
 prepare() {
 	cd "$_srcdir"
 	patch -Np1 -i "$startdir/$_patchfile"
-	# niri stamps "unknown commit" into its version string for git builds; put
-	# the real short hash there so `niri --version` stays honest.
-	sed -i "s/\"unknown commit\"/\"$_patched\"/" src/utils/mod.rs
 }
 
 build() {
 	cd "$_srcdir"
+	# niri reads these at compile time (src/utils/mod.rs::version). Setting
+	# the commit hash here keeps `niri --version` honest without patching the
+	# source file, which would break again if upstream moves that code.
+	export NIRI_BUILD_COMMIT="$_patched"
 	cargo build --frozen --release
+}
+
+check() {
+	cd "$_srcdir"
+	cargo test --frozen --release
 }
 
 package() {
