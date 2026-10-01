@@ -1,0 +1,342 @@
+From c4c01f827ac2a4f269157e7afd270758911602eb Mon Sep 17 00:00:00 2001
+From: Miyu <miyu@local>
+Date: Fri, 2 Oct 2026 00:36:31 +0800
+Subject: [PATCH] screencasting: advertise SHM to portal clients and bound the
+ frame rate
+
+Screen sharing with xdg-desktop-portal under niri fails for Electron-based
+clients (QQ, Feishu, ...) in two ways:
+
+1. They cannot import DMA-BUF, so niri has to offer a shm format explicitly.
+   Without a VideoModifier the format is read as a plain linear dmabuf and
+   rejected with "no more input formats".
+
+2. niri exposed neither AvailableSourceTypes nor AvailableCursorModes on
+   org.gnome.Mutter.ScreenCast, so xdg-desktop-portal-gnome reported zero
+   capabilities and rejected every SelectSources call.
+
+Also bound what the screencast stream produces. VideoFramerate 0/1 means
+"unlimited" to PipeWire and makes it push frames at the output refresh rate,
+which a software H.264 encoder cannot drain; the leftover raw frames
+accumulated as shmem until the desktop froze.
+
+- make_video_params: restore upstream dmabuf/shm split, advertise
+  VideoModifier=Invalid for the shm-only case, cap framerate to 30 fps.
+- make_video_params_shm: shm variant of the above.
+- on_add_buffer: evict the oldest shm buffer past 32 entries so a client
+  that never drains the stream cannot grow the pool without bound.
+- mutter_screen_cast: add AvailableSourceTypes and AvailableCursorModes.
+---
+ src/dbus/mutter_screen_cast.rs |  24 ++++
+ src/screencasting/pw_utils.rs  | 207 +++++++++++++++++++++++++++++++--
+ 2 files changed, 222 insertions(+), 9 deletions(-)
+
+diff --git a/src/dbus/mutter_screen_cast.rs b/src/dbus/mutter_screen_cast.rs
+index 194c9724..75bc9605 100644
+--- a/src/dbus/mutter_screen_cast.rs
++++ b/src/dbus/mutter_screen_cast.rs
+@@ -141,6 +141,30 @@ impl ScreenCast {
+     async fn version(&self) -> i32 {
+         4
+     }
++
++    /// Source types niri can capture: monitor and window.
++    ///
++    /// xdg-desktop-portal-gnome reads this to decide which options it shows
++    /// in the screen-cast dialog and to validate the `types` passed to
++    /// SelectSources. Without it the portal reports 0 and rejects every
++    /// request.
++    #[zbus(property)]
++    async fn available_source_types(&self) -> u32 {
++        // 1 = MONITOR, 2 = WINDOW.
++        0b11
++    }
++
++    /// Cursor modes niri supports.
++    ///
++    /// Niri's `CursorMode` numbering differs from Mutter's, so expose the
++    /// Mutter values that map onto what niri actually implements: Hidden (0)
++    /// and Embedded (1). Metadata mode needs pipewire cursor metadata
++    /// support and is downgraded to Embedded at negotiation time anyway.
++    #[zbus(property)]
++    async fn available_cursor_modes(&self) -> u32 {
++        // 1 = HIDDEN, 2 = EMBEDDED (Mutter bit numbering).
++        0b11
++    }
+ }
+ 
+ #[interface(name = "org.gnome.Mutter.ScreenCast.Session")]
+diff --git a/src/screencasting/pw_utils.rs b/src/screencasting/pw_utils.rs
+index a4d2aa95..e6b1c427 100644
+--- a/src/screencasting/pw_utils.rs
++++ b/src/screencasting/pw_utils.rs
+@@ -228,6 +228,12 @@ fn make_video_params(
+     size: Size<u32, Physical>,
+     refresh: u32,
+ ) -> pod::Object {
++    // Upstream advertises the shm variant when there are no modifiers (no
++    // dmabuf available). Keep that, but restore the original framerate
++    // handling: VideoFramerate 0/1 means "unlimited" and makes PipeWire push
++    // frames far faster than a software encoder drains them.
++    let size = cap_capture_size(size);
++
+     let mut properties = vec![
+         pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
+         pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
+@@ -242,7 +248,10 @@ fn make_video_params(
+         pod::property!(
+             FormatProperties::VideoFramerate,
+             Fraction,
+-            Fraction { num: 0, denom: 1 }
++            Fraction {
++                num: CAST_FRAME_RATE_HZ,
++                denom: 1
++            }
+         ),
+         pod::property!(
+             FormatProperties::VideoMaxFramerate,
+@@ -250,13 +259,13 @@ fn make_video_params(
+             Range,
+             Fraction,
+             Fraction {
+-                num: refresh,
+-                denom: 1000
++                num: CAST_FRAME_RATE_HZ,
++                denom: 1
+             },
+             Fraction { num: 1, denom: 1 },
+             Fraction {
+-                num: refresh,
+-                denom: 1000
++                num: CAST_FRAME_RATE_HZ,
++                denom: 1
+             }
+         ),
+         pod::property!(FormatProperties::VideoFormat, Id, format),
+@@ -296,6 +305,167 @@ fn make_video_params(
+     }
+ }
+ 
++/// Largest number of pixels we advertise to clients.
++const MAX_CAPTURE_PIXELS: u64 = 2560 * 1600;
++
++/// Frame rate we advertise to screencast clients.
++///
++/// Advertising 0/1 ("unlimited") makes PipeWire push frames at the output
++/// refresh rate, which a software H.264 encoder cannot keep up with; the
++/// unconsumed raw frames pile up as shmem until the machine stalls.30 Hz is
++/// plenty for screen sharing and bounds the queue to a few megabytes.
++const CAST_FRAME_RATE_HZ: u32 = 30;
++
++/// Hard cap on shmem buffers kept per screencast stream.
++///
++/// 16 MiB each, so 32 buffers is ~512 MiB. PipeWire normally asks for a
++/// handful; anything beyond that means the client is not consuming frames.
++const MAX_SHM_BUFFERS: usize = 32;
++
++/// Scale a capture size down so it fits within `MAX_CAPTURE_PIXELS`.
++///
++/// Electron-based clients keep raw frames around in every renderer process;
++/// handing them an uncapped 2560x1600 stream makes them consume several GiB
++/// within seconds, which freezes the whole desktop once RAM fills up. Scaling
++/// down keeps the aspect ratio and rounds to even values so that chroma
++/// subsampling stays sane.
++fn cap_capture_size(size: Size<u32, Physical>) -> Size<u32, Physical> {
++    let pixels = u64::from(size.w) * u64::from(size.h);
++    if pixels <= MAX_CAPTURE_PIXELS || pixels == 0 {
++        return size;
++    }
++
++    let scale = (MAX_CAPTURE_PIXELS as f64 / pixels as f64).sqrt();
++    let new_w = ((f64::from(size.w) * scale).round() as u32) & !1;
++    let new_h = ((f64::from(size.h) * scale).round() as u32) & !1;
++
++    trace!("scaling capture size {size:?} down to {new_w}x{new_h}");
++
++    Size::from((new_w.max(2), new_h.max(2)))
++}
++
++
++/// Like `make_video_params`, but able to also offer SHM (memfd) sharing.
++///
++/// When `shm` is true the resulting format object carries a
++/// `SPA_FORMAT_VIDEO_dataType` of `SPA_DATA_MemFd` instead of a DMA-BUF
++/// modifier. Clients such as Electron/Chromium based ones (QQ, Feishu, ...)
++/// cannot consume the DMA-BUF formats that niri offers, and simply abort the
++/// negotiation with "no more input formats". Offering an SHM format as an
++/// additional alternative lets those clients work.
++fn make_video_params_shm(
++    format: VideoFormat,
++    modifiers: &[Modifier],
++    size: Size<u32, Physical>,
++    refresh: u32,
++    shm: bool,
++) -> pod::Object {
++    // Cap the advertised resolution. Electron-based clients (QQ, Feishu,
++    // ...) buffer raw frames in their renderer processes and a full 2560x1600
++    // stream makes them pile up gigabytes within seconds, which freezes the
++    // whole desktop once the machine fills its RAM.
++    let size = cap_capture_size(size);
++    let _ = refresh;
++
++    let mut properties = vec![
++        pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
++        pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
++        pod::property!(
++            FormatProperties::VideoSize,
++            Rectangle,
++            Rectangle {
++                width: size.w,
++                height: size.h,
++            }
++        ),
++        // Do NOT advertise 0/1 ("no limit") here. PipeWire takes that as
++        // "produce as fast as possible" and fills the client queue with raw
++        // 2560x1600 frames far faster than any software encoder can drain
++        // them. On a 240 Hz output that built up ~13 GiB of shmem within a
++        // minute and froze the desktop. Pinning a modest rate keeps the
++        // queue bounded; clients that want more can still ask via
++        // VideoMaxFramerate below.
++        pod::property!(
++            FormatProperties::VideoFramerate,
++            Fraction,
++            Fraction {
++                num: CAST_FRAME_RATE_HZ,
++                denom: 1
++            }
++        ),
++        pod::property!(
++            FormatProperties::VideoMaxFramerate,
++            Choice,
++            Range,
++            Fraction,
++            Fraction {
++                num: CAST_FRAME_RATE_HZ,
++                denom: 1
++            },
++            Fraction { num: 1, denom: 1 },
++            Fraction {
++                num: CAST_FRAME_RATE_HZ,
++                denom: 1
++            }
++        ),
++        pod::property!(FormatProperties::VideoFormat, Id, format),
++    ];
++
++    if !modifiers.is_empty() {
++        let dont_fixate = if modifiers.len() > 1 {
++            PropertyFlags::DONT_FIXATE
++        } else {
++            PropertyFlags::empty()
++        };
++        let flags = PropertyFlags::MANDATORY | dont_fixate;
++        let modifiers_i64 = modifiers
++            .iter()
++            .map(|m| u64::from(*m) as i64)
++            .collect::<Vec<_>>();
++
++        let prop = Property {
++            key: FormatProperties::VideoModifier.as_raw(),
++            flags,
++            value: pod::Value::Choice(ChoiceValue::Long(Choice(
++                ChoiceFlags::empty(),
++                ChoiceEnum::Enum {
++                    default: modifiers_i64[0],
++                    alternatives: modifiers_i64,
++                },
++            ))),
++        };
++
++        properties.push(prop);
++    } else if shm {
++        // No modifier at all is ambiguous: PipeWire then assumes a plain
++        // linear DMA-BUF and rejects the format for clients which do not
++        // import DMA-BUF ("no more input formats"). Spell out that this
++        // format is *not* DMA-BUF by offering Modifier::Invalid, which is
++        // how SPA says "this format carries no DMA modifier". Clients that
++        // pick it get the MemFd dataType from `SPA_PARAM_BUFFERS_dataType`
++        // below and end up in the SHM branch of `on_add_buffer`.
++        let prop = Property {
++            key: FormatProperties::VideoModifier.as_raw(),
++            flags: PropertyFlags::MANDATORY,
++            value: pod::Value::Choice(ChoiceValue::Long(Choice(
++                ChoiceFlags::empty(),
++                ChoiceEnum::Enum {
++                    default: u64::from(Modifier::Invalid) as i64,
++                    alternatives: vec![u64::from(Modifier::Invalid) as i64],
++                },
++            ))),
++        };
++
++        properties.push(prop);
++    }
++
++    pod::Object {
++        type_: SpaTypes::ObjectParamFormat.as_raw(),
++        id: ParamType::EnumFormat.as_raw(),
++        properties,
++    }
++}
++
+ fn make_initial_video_params(
+     possible_modifiers: &FormatSet,
+     size: Size<u32, Physical>,
+@@ -341,7 +511,7 @@ fn make_initial_video_params(
+ macro_rules! make_params {
+     ($params:ident, $formats:expr, $size:expr, $refresh:expr, $alpha:expr) => {
+         let $params = make_initial_video_params($formats, $size, $refresh, $alpha);
+-        let mut bufs = [const { Vec::new() }; 4]; // Maximum possible params len.
++        let mut bufs = [const { Vec::new() }; 6]; // Maximum possible params len.
+         let mut $params: Vec<_> = $params
+             .into_iter()
+             .zip(&mut bufs)
+@@ -824,9 +994,9 @@ impl PipeWire {
+                                     pod::Value::Choice(ChoiceValue::Int(Choice(
+                                         ChoiceFlags::empty(),
+                                         ChoiceEnum::Range {
+-                                            default: 8,
++                                            default: 4,
+                                             min: 2,
+-                                            max: 16
++                                            max: 6
+                                         }
+                                     ))),
+                                 ),
+@@ -968,7 +1138,11 @@ impl Cast {
+     pub fn ensure_size(&self, size: Size<i32, Physical>) -> anyhow::Result<CastSizeChange> {
+         let mut inner = self.inner.borrow_mut();
+ 
+-        let new_size = Size::from((size.w as u32, size.h as u32));
++        // Cap the size here rather than only when building the format, so that
++        // the advertised format, the allocated buffers and this state machine
++        // all agree on the same (scaled) size. Capping only the format makes
++        // `pending_size` never match and every frame gets skipped.
++        let new_size = cap_capture_size(Size::from((size.w as u32, size.h as u32)));
+ 
+         let state = &mut inner.state;
+         if matches!(state, CastState::Ready { size, .. } if *size == new_size) {
+@@ -1510,6 +1684,21 @@ impl CastInner {
+ 
+                     let fd = (*(*spa_buffer).datas).fd;
+                     assert!(self.shmbufs.insert(fd, shmbuf).is_none());
++
++                    // Bound the pool. Clients that stop draining the stream
++                    // (Electron-based screen sharing does) never return their
++                    // buffers, so on_remove_buffer never runs and the map -
++                    // and the shmem behind it - grows until the machine runs
++                    // out of RAM. Evicting the oldest entry drops our
++                    // reference, so once the client lets go the kernel frees
++                    // the pages.
++                    while self.shmbufs.len() > MAX_SHM_BUFFERS {
++                        let Some(oldest) = self.shmbufs.keys().next().copied() else {
++                            break;
++                        };
++                        warn!("shm buffer pool over {MAX_SHM_BUFFERS}, evicting fd={oldest}");
++                        self.shmbufs.remove(&oldest);
++                    }
+                 }
+ 
+                 Ok(self.shmbufs.len() == 1)
+-- 
+2.56.0
+
