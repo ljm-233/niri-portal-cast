@@ -38,12 +38,14 @@ _upstream=1f03391ea644c2a43597de7f637269e26d1e1b49
 _patched=c4c01f82
 _srcdir=niri
 _patchfile=0001-screencasting-advertise-SHM-and-bound-frame-rate.patch
-source=("git+https://github.com/niri-wm/niri.git#commit=$_upstream")
-b2sums=('SKIP')
+source=("git+https://github.com/niri-wm/niri.git#commit=$_upstream"
+	"$_patchfile")
+b2sums=('SKIP'
+	'36ec8b2265271fd73b595fc4a82138f95eac695673042553936fd8db7183cb8214190f03723368d739929feebc3a384b53882d220bda88ff16ef2605b58bb39c')
 
 prepare() {
 	cd "$_srcdir"
-	patch -Np1 -i "$startdir/$_patchfile"
+	patch -Np1 -i "$srcdir/$_patchfile"
 }
 
 build() {
