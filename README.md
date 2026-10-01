@@ -72,13 +72,29 @@ git format-patch -1 --stdout > 新的patch文件
 
 ## 与 niri-shm-sharing 的区别
 
-AUR 上的 `niri-shm-sharing` 同样给 niri 打SHM 补丁，区别在于：
+AUR 上的 `niri-shm-sharing`（维护者 onez3r0，补丁来自 `rucnyz/niri`）同样给 niri
+打 SHM 补丁，只改 `src/screencasting/pw_utils.rs` 一个文件。区别在于：
 
-- 它只处理了 shmem fallback，没有宣告 `AvailableSourceTypes` 和
-  `AvailableCursorModes`。缺了这两项，`xdg-desktop-portal-gnome` 会报告零能力
-  并拒绝所有 `SelectSources` 调用，表现为选择框里只有「整个屏幕」。
-- 它没有采集帧率上限。
-- 它 pin 在 `8ed0da44`，比这里的基线旧。
+- **它不宣告 `AvailableSourceTypes` 和 `AvailableCursorModes`**。这两个属性定义在
+  `src/dbus/mutter_screen_cast.rs`，它的补丁没碰那个文件。缺了它们，
+  `xdg-desktop-portal-gnome` 会向 niri 读到零能力，拒绝所有 `SelectSources` 调用，
+  表现为选择窗口时只有「整个屏幕」可选。
+- **它的 `VideoFramerate` 宣告为 `{num: 0, denom: 1}`**，也就是不限速。pipewire 会按
+  输出刷新率推帧，而 Electron 端的软件 H.264 编码器来不及消费，剩余裸帧持续堆积。
+  本包的补丁固定 30fps（`CAST_FRAME_RATE_HZ`），给采集侧一个硬上限。
+- **它没有限制 SHM buffer 池**。本包把 `MAX_SHM_BUFFERS` 压到 32，超出的帧直接丢弃，
+  而不是一直等客户端释放。
+- **它的 `pkgver` 写作 `26.04`**，实际 pin 在 commit `8ed0da44`；本包写作
+  `26.04.161.gc4c01f82`，如实反映基线比v26.04 tag 晚161 个提交。
+
+实测（Arch Linux，niri Wayland 会话，QQ 通过 portal 共享）：
+
+- 只装 `niri-shm-sharing` 时，选择窗口里无法选单个窗口，只能共享整屏。
+- 换成本包后选择窗口可用，共享期间内存稳定（QQ 13 进程 RSS 合计约 2.6 GB，
+  Shmem 约 570 MB），不再出现共享一开始就爆内存卡死。
+
+如果你要的只是「能整屏共享」，两个包都可以；如果需要选单个窗口，或者内存一开共享
+就往上涨，换成这个。
 
 ## 许可证
 

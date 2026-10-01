@@ -6,7 +6,9 @@
 #
 # To follow a new upstream release:
 #   1. rebase the patch onto the new tag
-#   2. update _version, _patched and b2sums (b2sum -g *.patch)
+#   2. update _version, _patched and b2sums
+#      (run `makepkg -g` to regenerate them from source=(), not `b2sum -g`,
+#      which is not a valid option on this system)
 #
 # Build with:
 #   makepkg -si
