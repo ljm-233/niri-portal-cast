@@ -48,8 +48,15 @@ git format-patch -1 --stdout > 新的patch文件
 
 ## 已知状态
 
-基于 niri v26.04（`c4c01f82`）。上游 PR #1791 里有类似的 SHM 改动，
-但截至打包时尚未并入 main。
+补丁 commit `c4c01f82`，上游基线 `1f03391e`（main，2026-09-25）。
+
+注意这不是 niri 26.04 正式版：v26.04 tag 打于 2026-04-25，基线比它晚161 个
+提交。这161 个里包含 `pw_utils: retain SHM mappings for buffer lifetime`、
+`pw_utils: borrow SHM buffers when rendering and clearing` 等对 SHM 处理的
+重构。把这个补丁打到 v26.04 tag 上会有 6 个 hunk 应用失败，所以 PKGBUILD
+锁的是具体 commit 而非 tag。
+
+上游 PR #1791 里有类似的 SHM 改动，但截至打包时尚未并入 main。
 
 ## 许可证
 
