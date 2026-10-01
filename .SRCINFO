@@ -1,7 +1,7 @@
 pkgbase = niri-shm-git
 	pkgdesc = Scrollable-tiling Wayland compositor patched so portal screen sharing works with Electron clients
 	pkgver = 26.04.161.gc4c01f82
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/ljm-233/niri-shm
 	arch = aarch64
 	arch = x86_64
@@ -28,7 +28,9 @@ pkgbase = niri-shm-git
 	options = !lto
 	source = git+https://github.com/niri-wm/niri.git#commit=1f03391ea644c2a43597de7f637269e26d1e1b49
 	source = 0001-screencasting-advertise-SHM-and-bound-frame-rate.patch
+	source = 0002-screencasting-configurable-frame-rate-and-buffer-pool.patch
 	b2sums = SKIP
 	b2sums = 36ec8b2265271fd73b595fc4a82138f95eac695673042553936fd8db7183cb8214190f03723368d739929feebc3a384b53882d220bda88ff16ef2605b58bb39c
+	b2sums = 97817f107370230943bd290d0cd44ae125b45944c50e700799705b61c56e27c564491d86114baa373b5674e49f1a0afa787859e43ac8a06755327a81096ba553
 
 pkgname = niri-shm-git

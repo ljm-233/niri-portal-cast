@@ -1,0 +1,562 @@
+From 9d640bcd5d3261a7474d3e361560265ac3435bbc Mon Sep 17 00:00:00 2001
+From: ljm-233 <2836583630@qq.com>
+Date: Fri, 2 Oct 2026 03:11:09 +0800
+Subject: [PATCH] screencasting: make the frame rate and SHM buffer bound
+ configurable
+
+The 30 Hz rate and 32 buffer pool were the values that happened to stop
+Electron clients from exhausting memory, but they were compiled in. Expose
+them as a `screencasting { }` config block so a user can trade CPU for
+smoothness without rebuilding.
+
+Range is 30-120 Hz and 8-256 buffers; values outside that are clamped
+rather than rejected, so a typo cannot make the compositor advertise a
+rate that stalls the machine.
+---
+ docs/wiki/Configuration:-Miscellaneous.md |   5 +
+ niri-config/src/lib.rs                    |   8 +
+ niri-config/src/screencasting.rs          |  97 ++++++++++++
+ src/screencasting/mod.rs                  |   2 +
+ src/screencasting/pw_utils.rs             | 183 +++++-----------------
+ 5 files changed, 154 insertions(+), 141 deletions(-)
+ create mode 100644 niri-config/src/screencasting.rs
+
+diff --git a/docs/wiki/Configuration:-Miscellaneous.md b/docs/wiki/Configuration:-Miscellaneous.md
+index 7a2f42dd..d7dc35f5 100644
+--- a/docs/wiki/Configuration:-Miscellaneous.md
++++ b/docs/wiki/Configuration:-Miscellaneous.md
+@@ -24,6 +24,11 @@ cursor {
+     hide-after-inactive-ms 1000
+ }
+ 
++screencasting {
++    frame-rate-hz 60
++    max-shm-buffers 32
++}
++
+ overview {
+     zoom 0.5
+     backdrop-color "#262626"
+diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
+index 22e0d3db..4a4c5467 100644
+--- a/niri-config/src/lib.rs
++++ b/niri-config/src/lib.rs
+@@ -40,6 +40,7 @@ pub mod layout;
+ pub mod misc;
+ pub mod output;
+ pub mod recent_windows;
++pub mod screencasting;
+ pub mod utils;
+ pub mod window_rule;
+ pub mod workspace;
+@@ -48,6 +49,7 @@ pub use crate::animations::{Animation, Animations};
+ pub use crate::appearance::*;
+ pub use crate::binds::*;
+ pub use crate::debug::Debug;
++pub use crate::screencasting::Screencasting;
+ pub use crate::error::{ConfigIncludeError, ConfigParseResult};
+ pub use crate::gestures::Gestures;
+ pub use crate::input::{Input, ModKey, ScrollMethod, TrackLayout, WarpMouseToFocusMode, Xkb};
+@@ -90,6 +92,7 @@ pub struct Config {
+     pub binds: Binds,
+     pub switch_events: SwitchBinds,
+     pub debug: Debug,
++    pub screencasting: Screencasting,
+     pub workspaces: Vec<Workspace>,
+     pub recent_windows: RecentWindows,
+ }
+@@ -207,6 +210,7 @@ where
+                 "xwayland-satellite" => m_merge!(xwayland_satellite),
+                 "switch-events" => m_merge!(switch_events),
+                 "debug" => m_merge!(debug),
++                "screencasting" => m_merge!(screencasting),
+ 
+                 // Multipart sections.
+                 "output" => {
+@@ -2308,6 +2312,10 @@ mod tests {
+                 skip_cursor_only_updates_during_vrr: false,
+                 disable_10bit_output: false,
+             },
++            screencasting: Screencasting {
++                frame_rate_hz: 60,
++                max_shm_buffers: 32,
++            },
+             workspaces: [
+                 Workspace {
+                     name: WorkspaceName(
+diff --git a/niri-config/src/screencasting.rs b/niri-config/src/screencasting.rs
+new file mode 100644
+index 00000000..f7e7cc70
+--- /dev/null
++++ b/niri-config/src/screencasting.rs
+@@ -0,0 +1,97 @@
++use crate::utils::MergeWith;
++
++/// Screencasting limits that keep portal screen sharing usable with clients
++/// that cannot keep up with a full-rate raw stream (Electron/QQ, Feishu, ...).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Screencasting {
++    /// Frame rate advertised to clients, in Hz.
++    pub frame_rate_hz: u32,
++    /// Hard cap on shmem buffers kept per stream.
++    pub max_shm_buffers: usize,
++}
++
++#[derive(knuffel::Decode, Debug, Default, PartialEq)]
++pub struct ScreencastingPart {
++    #[knuffel(child, unwrap(argument))]
++    pub frame_rate_hz: Option<u32>,
++    #[knuffel(child, unwrap(argument))]
++    pub max_shm_buffers: Option<usize>,
++}
++
++impl Screencasting {
++    pub const FRAME_RATE_MIN: u32 = 30;
++    pub const FRAME_RATE_MAX: u32 = 120;
++    pub const FRAME_RATE_DEFAULT: u32 = 60;
++
++    /// One buffer is a full raw frame: at the default capture size
++    /// (2560x1600 BGRA) that is 16 MiB, so this bound doubles as the memory
++    /// ceiling for a client that stops consuming.
++    pub const SHM_BUFFERS_MIN: usize = 8;
++    pub const SHM_BUFFERS_MAX: usize = 256;
++    pub const SHM_BUFFERS_DEFAULT: usize = 32;
++
++    /// Out-of-range values are clamped rather than rejected, so a typo cannot
++    /// leave the compositor advertising a rate that stalls the machine.
++    pub fn frame_rate_hz(&self) -> u32 {
++        self.frame_rate_hz.clamp(Self::FRAME_RATE_MIN, Self::FRAME_RATE_MAX)
++    }
++
++    pub fn max_shm_buffers(&self) -> usize {
++        self.max_shm_buffers
++            .clamp(Self::SHM_BUFFERS_MIN, Self::SHM_BUFFERS_MAX)
++    }
++}
++
++impl Default for Screencasting {
++    fn default() -> Self {
++        Self {
++            frame_rate_hz: Self::FRAME_RATE_DEFAULT,
++            max_shm_buffers: Self::SHM_BUFFERS_DEFAULT,
++        }
++    }
++}
++
++impl MergeWith<ScreencastingPart> for Screencasting {
++    fn merge_with(&mut self, part: &ScreencastingPart) {
++        merge_clone!((self, part), frame_rate_hz, max_shm_buffers);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn defaults_match_the_documented_values() {
++        let s = Screencasting::default();
++        assert_eq!(s.frame_rate_hz(), 60);
++        assert_eq!(s.max_shm_buffers(), 32);
++    }
++
++    #[test]
++    fn out_of_range_values_are_clamped() {
++        let too_fast = Screencasting {
++            frame_rate_hz: 500,
++            max_shm_buffers: 10_000,
++        };
++        assert_eq!(too_fast.frame_rate_hz(), Screencasting::FRAME_RATE_MAX);
++        assert_eq!(too_fast.max_shm_buffers(), Screencasting::SHM_BUFFERS_MAX);
++
++        let too_slow = Screencasting {
++            frame_rate_hz: 1,
++            max_shm_buffers: 0,
++        };
++        assert_eq!(too_slow.frame_rate_hz(), Screencasting::FRAME_RATE_MIN);
++        assert_eq!(too_slow.max_shm_buffers(), Screencasting::SHM_BUFFERS_MIN);
++    }
++
++    #[test]
++    fn values_inside_the_range_pass_through() {
++        let s = Screencasting {
++            frame_rate_hz: 30,
++            max_shm_buffers: 64,
++        };
++        assert_eq!(s.frame_rate_hz(), 30);
++        assert_eq!(s.max_shm_buffers(), 64);
++    }
++}
+diff --git a/src/screencasting/mod.rs b/src/screencasting/mod.rs
+index 232b584b..9477616a 100644
+--- a/src/screencasting/mod.rs
++++ b/src/screencasting/mod.rs
+@@ -79,9 +79,11 @@ impl State {
+     fn prepare_pw_cast(&mut self) -> anyhow::Result<Option<(GbmDevice<DeviceFd>, FormatSet)>> {
+         // Ensure PipeWire is initialized.
+         if self.niri.casting.pipewire.is_none() {
++            let screencasting = self.niri.config.borrow().screencasting;
+             let pw = PipeWire::new(
+                 self.niri.event_loop.clone(),
+                 self.niri.casting.pw_to_niri.clone(),
++                screencasting,
+             )
+             .context("error initializing PipeWire")?;
+             self.niri.casting.pipewire = Some(pw);
+diff --git a/src/screencasting/pw_utils.rs b/src/screencasting/pw_utils.rs
+index e6b1c427..a9784f77 100644
+--- a/src/screencasting/pw_utils.rs
++++ b/src/screencasting/pw_utils.rs
+@@ -61,6 +61,7 @@ use crate::render_helpers::{
+ };
+ use crate::screencasting::CastRenderElement;
+ use crate::utils::{get_monotonic_time, CastSessionId, CastStreamId};
++use niri_config::Screencasting;
+ 
+ mod shm_mapping;
+ use shm_mapping::ShmMapping;
+@@ -86,6 +87,10 @@ pub struct PipeWire {
+     pub token: RegistrationToken,
+     event_loop: LoopHandle<'static, State>,
+     to_niri: calloop::channel::Sender<PwToNiri>,
++    /// Screencast limits, read from the niri config at startup. A config reload
++    /// only applies to newly started casts.
++    frame_rate_hz: u32,
++    max_shm_buffers: usize,
+ }
+ 
+ pub enum PwToNiri {
+@@ -106,6 +111,8 @@ pub struct Cast {
+     formats: FormatSet,
+     offer_alpha: bool,
+     cursor_mode: CursorMode,
++    /// Capture limits for this stream, taken from the config when it started.
++    frame_rate_hz: u32,
+     last_frame_time: Duration,
+     last_frame_interval: Duration,
+     scheduled_redraw: Option<RegistrationToken>,
+@@ -122,6 +129,8 @@ struct CastInner {
+     state: CastState,
+     refresh: u32,
+     min_time_between_frames: Duration,
++    /// Bound on the shmem buffer pool for this stream, from the config.
++    max_shm_buffers: usize,
+     dmabufs: HashMap<i64, Dmabuf>,
+     shmbufs: HashMap<i64, Shmbuf>,
+     /// Buffers dequeued from PipeWire in process of rendering.
+@@ -226,7 +235,11 @@ fn make_video_params(
+     format: VideoFormat,
+     modifiers: &[Modifier],
+     size: Size<u32, Physical>,
+-    refresh: u32,
++    // The output refresh rate is deliberately ignored: the advertised rate
++    // is capped by the `screencasting { frame-rate-hz }` config instead of
++    // following the output.
++    _refresh: u32,
++    frame_rate_hz: u32,
+ ) -> pod::Object {
+     // Upstream advertises the shm variant when there are no modifiers (no
+     // dmabuf available). Keep that, but restore the original framerate
+@@ -249,7 +262,7 @@ fn make_video_params(
+             FormatProperties::VideoFramerate,
+             Fraction,
+             Fraction {
+-                num: CAST_FRAME_RATE_HZ,
++                num: frame_rate_hz,
+                 denom: 1
+             }
+         ),
+@@ -259,12 +272,12 @@ fn make_video_params(
+             Range,
+             Fraction,
+             Fraction {
+-                num: CAST_FRAME_RATE_HZ,
++                num: frame_rate_hz,
+                 denom: 1
+             },
+             Fraction { num: 1, denom: 1 },
+             Fraction {
+-                num: CAST_FRAME_RATE_HZ,
++                num: frame_rate_hz,
+                 denom: 1
+             }
+         ),
+@@ -312,15 +325,8 @@ const MAX_CAPTURE_PIXELS: u64 = 2560 * 1600;
+ ///
+ /// Advertising 0/1 ("unlimited") makes PipeWire push frames at the output
+ /// refresh rate, which a software H.264 encoder cannot keep up with; the
+-/// unconsumed raw frames pile up as shmem until the machine stalls.30 Hz is
+-/// plenty for screen sharing and bounds the queue to a few megabytes.
+-const CAST_FRAME_RATE_HZ: u32 = 30;
+-
+-/// Hard cap on shmem buffers kept per screencast stream.
+-///
+-/// 16 MiB each, so 32 buffers is ~512 MiB. PipeWire normally asks for a
+-/// handful; anything beyond that means the client is not consuming frames.
+-const MAX_SHM_BUFFERS: usize = 32;
++/// unconsumed raw frames pile up as shmem until the machine stalls. The rate
++/// itself is configurable via the `screencasting { frame-rate-hz }` block.
+ 
+ /// Scale a capture size down so it fits within `MAX_CAPTURE_PIXELS`.
+ ///
+@@ -345,131 +351,12 @@ fn cap_capture_size(size: Size<u32, Physical>) -> Size<u32, Physical> {
+ }
+ 
+ 
+-/// Like `make_video_params`, but able to also offer SHM (memfd) sharing.
+-///
+-/// When `shm` is true the resulting format object carries a
+-/// `SPA_FORMAT_VIDEO_dataType` of `SPA_DATA_MemFd` instead of a DMA-BUF
+-/// modifier. Clients such as Electron/Chromium based ones (QQ, Feishu, ...)
+-/// cannot consume the DMA-BUF formats that niri offers, and simply abort the
+-/// negotiation with "no more input formats". Offering an SHM format as an
+-/// additional alternative lets those clients work.
+-fn make_video_params_shm(
+-    format: VideoFormat,
+-    modifiers: &[Modifier],
+-    size: Size<u32, Physical>,
+-    refresh: u32,
+-    shm: bool,
+-) -> pod::Object {
+-    // Cap the advertised resolution. Electron-based clients (QQ, Feishu,
+-    // ...) buffer raw frames in their renderer processes and a full 2560x1600
+-    // stream makes them pile up gigabytes within seconds, which freezes the
+-    // whole desktop once the machine fills its RAM.
+-    let size = cap_capture_size(size);
+-    let _ = refresh;
+-
+-    let mut properties = vec![
+-        pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
+-        pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
+-        pod::property!(
+-            FormatProperties::VideoSize,
+-            Rectangle,
+-            Rectangle {
+-                width: size.w,
+-                height: size.h,
+-            }
+-        ),
+-        // Do NOT advertise 0/1 ("no limit") here. PipeWire takes that as
+-        // "produce as fast as possible" and fills the client queue with raw
+-        // 2560x1600 frames far faster than any software encoder can drain
+-        // them. On a 240 Hz output that built up ~13 GiB of shmem within a
+-        // minute and froze the desktop. Pinning a modest rate keeps the
+-        // queue bounded; clients that want more can still ask via
+-        // VideoMaxFramerate below.
+-        pod::property!(
+-            FormatProperties::VideoFramerate,
+-            Fraction,
+-            Fraction {
+-                num: CAST_FRAME_RATE_HZ,
+-                denom: 1
+-            }
+-        ),
+-        pod::property!(
+-            FormatProperties::VideoMaxFramerate,
+-            Choice,
+-            Range,
+-            Fraction,
+-            Fraction {
+-                num: CAST_FRAME_RATE_HZ,
+-                denom: 1
+-            },
+-            Fraction { num: 1, denom: 1 },
+-            Fraction {
+-                num: CAST_FRAME_RATE_HZ,
+-                denom: 1
+-            }
+-        ),
+-        pod::property!(FormatProperties::VideoFormat, Id, format),
+-    ];
+-
+-    if !modifiers.is_empty() {
+-        let dont_fixate = if modifiers.len() > 1 {
+-            PropertyFlags::DONT_FIXATE
+-        } else {
+-            PropertyFlags::empty()
+-        };
+-        let flags = PropertyFlags::MANDATORY | dont_fixate;
+-        let modifiers_i64 = modifiers
+-            .iter()
+-            .map(|m| u64::from(*m) as i64)
+-            .collect::<Vec<_>>();
+-
+-        let prop = Property {
+-            key: FormatProperties::VideoModifier.as_raw(),
+-            flags,
+-            value: pod::Value::Choice(ChoiceValue::Long(Choice(
+-                ChoiceFlags::empty(),
+-                ChoiceEnum::Enum {
+-                    default: modifiers_i64[0],
+-                    alternatives: modifiers_i64,
+-                },
+-            ))),
+-        };
+-
+-        properties.push(prop);
+-    } else if shm {
+-        // No modifier at all is ambiguous: PipeWire then assumes a plain
+-        // linear DMA-BUF and rejects the format for clients which do not
+-        // import DMA-BUF ("no more input formats"). Spell out that this
+-        // format is *not* DMA-BUF by offering Modifier::Invalid, which is
+-        // how SPA says "this format carries no DMA modifier". Clients that
+-        // pick it get the MemFd dataType from `SPA_PARAM_BUFFERS_dataType`
+-        // below and end up in the SHM branch of `on_add_buffer`.
+-        let prop = Property {
+-            key: FormatProperties::VideoModifier.as_raw(),
+-            flags: PropertyFlags::MANDATORY,
+-            value: pod::Value::Choice(ChoiceValue::Long(Choice(
+-                ChoiceFlags::empty(),
+-                ChoiceEnum::Enum {
+-                    default: u64::from(Modifier::Invalid) as i64,
+-                    alternatives: vec![u64::from(Modifier::Invalid) as i64],
+-                },
+-            ))),
+-        };
+-
+-        properties.push(prop);
+-    }
+-
+-    pod::Object {
+-        type_: SpaTypes::ObjectParamFormat.as_raw(),
+-        id: ParamType::EnumFormat.as_raw(),
+-        properties,
+-    }
+-}
+ 
+ fn make_initial_video_params(
+     possible_modifiers: &FormatSet,
+     size: Size<u32, Physical>,
+     refresh: u32,
++    frame_rate_hz: u32,
+     alpha: bool,
+ ) -> Vec<pod::Object> {
+     let mut rv = Vec::new();
+@@ -495,9 +382,9 @@ fn make_initial_video_params(
+         trace!("offering: {modifiers:?}");
+ 
+         if !modifiers.is_empty() {
+-            rv.push(make_video_params(format, &modifiers, size, refresh));
++            rv.push(make_video_params(format, &modifiers, size, refresh, frame_rate_hz));
+         }
+-        rv.push(make_video_params(format, &[], size, refresh));
++        rv.push(make_video_params(format, &[], size, refresh, frame_rate_hz));
+     };
+ 
+     if alpha {
+@@ -509,8 +396,8 @@ fn make_initial_video_params(
+ }
+ 
+ macro_rules! make_params {
+-    ($params:ident, $formats:expr, $size:expr, $refresh:expr, $alpha:expr) => {
+-        let $params = make_initial_video_params($formats, $size, $refresh, $alpha);
++    ($params:ident, $formats:expr, $size:expr, $refresh:expr, $hz:expr, $alpha:expr) => {
++        let $params = make_initial_video_params($formats, $size, $refresh, $hz, $alpha);
+         let mut bufs = [const { Vec::new() }; 6]; // Maximum possible params len.
+         let mut $params: Vec<_> = $params
+             .into_iter()
+@@ -524,6 +411,7 @@ impl PipeWire {
+     pub fn new(
+         event_loop: LoopHandle<'static, State>,
+         to_niri: calloop::channel::Sender<PwToNiri>,
++        screencasting: Screencasting,
+     ) -> anyhow::Result<Self> {
+         let main_loop = MainLoopRc::new(None).context("error creating MainLoop")?;
+         let context = ContextRc::new(&main_loop, None).context("error creating Context")?;
+@@ -566,6 +454,8 @@ impl PipeWire {
+             token,
+             event_loop,
+             to_niri,
++            frame_rate_hz: screencasting.frame_rate_hz(),
++            max_shm_buffers: screencasting.max_shm_buffers(),
+         })
+     }
+ 
+@@ -585,6 +475,9 @@ impl PipeWire {
+         let _span = tracy_client::span!("PipeWire::start_cast");
+         let _span = debug_span!("start_cast", %session_id).entered();
+ 
++        let frame_rate_hz = self.frame_rate_hz;
++        let max_shm_buffers = self.max_shm_buffers;
++
+         let to_niri_ = self.to_niri.clone();
+         let stop_cast = move || {
+             if let Err(err) = to_niri_.send(PwToNiri::StopCast { session_id }) {
+@@ -630,6 +523,7 @@ impl PipeWire {
+             state: CastState::ResizePending { pending_size },
+             refresh,
+             min_time_between_frames: Duration::ZERO,
++            max_shm_buffers,
+             dmabufs: HashMap::new(),
+             shmbufs: HashMap::new(),
+             rendering_buffers: Vec::new(),
+@@ -832,6 +726,7 @@ impl PipeWire {
+                                     &[modifier],
+                                     format_size,
+                                     inner.refresh,
++                                    frame_rate_hz,
+                                 );
+                                 let mut b = Vec::new();
+                                 let pod = make_pod(&mut b, o);
+@@ -841,6 +736,7 @@ impl PipeWire {
+                                     &formats,
+                                     format_size,
+                                     inner.refresh,
++                                    frame_rate_hz,
+                                     format_has_alpha
+                                 );
+                                 params.insert(0, pod);
+@@ -1095,7 +991,7 @@ impl PipeWire {
+ 
+         trace!("starting pw stream with size={pending_size:?}, refresh={refresh:?}");
+ 
+-        make_params!(params, &formats, pending_size, refresh, alpha);
++        make_params!(params, &formats, pending_size, refresh, frame_rate_hz, alpha);
+         stream
+             .connect(
+                 Direction::Output,
+@@ -1115,6 +1011,7 @@ impl PipeWire {
+             dynamic_target: false,
+             formats,
+             offer_alpha: alpha,
++            frame_rate_hz,
+             cursor_mode,
+             last_frame_time: Duration::ZERO,
+             last_frame_interval: Duration::ZERO,
+@@ -1166,6 +1063,7 @@ impl Cast {
+             &self.formats,
+             new_size,
+             inner.refresh,
++            self.frame_rate_hz,
+             self.offer_alpha
+         );
+         self.stream
+@@ -1187,7 +1085,7 @@ impl Cast {
+         inner.refresh = refresh;
+ 
+         let size = inner.state.expected_format_size();
+-        make_params!(params, &self.formats, size, refresh, self.offer_alpha);
++        make_params!(params, &self.formats, size, refresh, self.frame_rate_hz, self.offer_alpha);
+         self.stream
+             .update_params(&mut params)
+             .context("error updating stream params")?;
+@@ -1692,11 +1590,14 @@ impl CastInner {
+                     // out of RAM. Evicting the oldest entry drops our
+                     // reference, so once the client lets go the kernel frees
+                     // the pages.
+-                    while self.shmbufs.len() > MAX_SHM_BUFFERS {
++                    while self.shmbufs.len() > self.max_shm_buffers {
+                         let Some(oldest) = self.shmbufs.keys().next().copied() else {
+                             break;
+                         };
+-                        warn!("shm buffer pool over {MAX_SHM_BUFFERS}, evicting fd={oldest}");
++                        warn!(
++                            "shm buffer pool over {}, evicting fd={oldest}",
++                            self.max_shm_buffers
++                        );
+                         self.shmbufs.remove(&oldest);
+                     }
+                 }
+-- 
+2.56.0
+
