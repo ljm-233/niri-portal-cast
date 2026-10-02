@@ -1,4 +1,4 @@
-From 9d640bcd5d3261a7474d3e361560265ac3435bbc Mon Sep 17 00:00:00 2001
+From afd592411aaf07a87740f3bf734d14c75e77de6a Mon Sep 17 00:00:00 2001
 From: ljm-233 <2836583630@qq.com>
 Date: Fri, 2 Oct 2026 03:11:09 +0800
 Subject: [PATCH] screencasting: make the frame rate and SHM buffer bound

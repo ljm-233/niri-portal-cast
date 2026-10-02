@@ -1,4 +1,4 @@
-From c4c01f827ac2a4f269157e7afd270758911602eb Mon Sep 17 00:00:00 2001
+From 1bf44a1dd95dd950e5f959c483092e48898aaac6 Mon Sep 17 00:00:00 2001
 From: Miyu <miyu@local>
 Date: Fri, 2 Oct 2026 00:36:31 +0800
 Subject: [PATCH] screencasting: advertise SHM to portal clients and bound the

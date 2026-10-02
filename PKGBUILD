@@ -22,33 +22,33 @@
 #   makepkg -si
 
 pkgname=niri-portal-cast
-# v26.04 was tagged 2026-04-25; the pinned upstream commit is 161 commits
-# later, so call this 26.04.161.gc4c01f82 rather than pretending it is the
+# v26.04 was tagged 2026-04-25; the pinned upstream commit is 165 commits
+# later, so call this 26.04.165.g61dc3de4 rather than pretending it is the
 # release itself.
-pkgver=26.04.161.gc4c01f82
-pkgrel=4
+pkgver=26.04.165.g61dc3de4
+pkgrel=5
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
-arch=(aarch64 x86_64)
+arch=(x86_64)
 url="https://github.com/ljm-233/niri-portal-cast"
 license=(GPL-3.0-or-later)
 depends=(cairo gcc-libs glib2 glibc libinput libpipewire libxkbcommon mesa pango pixman
 	 seatd systemd-libs xdg-desktop-portal-gtk)
 makedepends=(clang rust)
 # The build is pinned to a commit past the v26.04 tag, so it cannot honestly
-# claim niri=26.04.161.gc4c01f82 -- that version does not exist upstream, and
+# claim niri=26.04.165.g61dc3de4 -- that version does not exist upstream, and
 # a dependency on it could never be satisfied. Claim the release it descends from.
 provides=("niri=26.04" "niri")
 conflicts=("niri")
 options=(!debug !lto)
-# Upstream baseline. This is main at 1f03391e, i.e. 161 commits after the
+# Upstream baseline. This is main at ed22699d, i.e. 165 commits after the
 # v26.04 tag: the patch was written against post-26.04 development, where
 # pw_utils.rs had already gained the SHM-mapping lifetime rework. Applying it
 # to the v26.04 tag fails 6 of 8 hunks, so the exact commit is pinned here
 # rather than a tag. Bump this when rebasing the patch onto newer upstream.
-_upstream=1f03391ea644c2a43597de7f637269e26d1e1b49
+_upstream=ed22699d99462f61ab171472d3ea67e844ea580d
 # Short hash of the commit carrying the patch, so `niri --version` reports
 # something more useful than "unknown commit".
-_patched=b5d62c3b
+_patched=61dc3de4
 _srcdir=niri
 _patchfiles=(
 	0001-screencasting-advertise-SHM-and-bound-frame-rate.patch
@@ -58,9 +58,9 @@ _patchfiles=(
 source=("git+https://github.com/niri-wm/niri.git#commit=$_upstream"
 	"${_patchfiles[@]}")
 b2sums=('SKIP'
-	'36ec8b2265271fd73b595fc4a82138f95eac695673042553936fd8db7183cb8214190f03723368d739929feebc3a384b53882d220bda88ff16ef2605b58bb39c'
-	'97817f107370230943bd290d0cd44ae125b45944c50e700799705b61c56e27c564491d86114baa373b5674e49f1a0afa787859e43ac8a06755327a81096ba553'
-	'7d380dc3b9bbf93686123dcad8a3599038d208d37793371945b5575224db1428f002a5a90ad30fd4ef3921e07ea0f372f8e0cb6f04be69e2dbbcf7baf4a422b6')
+	'11c822ffd4dc3053e7ca638693e036d18751784df5a14a3955229237bb2f2a8ce9124f035cd8c1d7c908e5d26d189a289ec3fea7e2054b2a1b6a0b265ef3d6fd'
+	'ed92df5545848ae0e11e03e31f5c3fb46d1b1641975c14464630440cbc8db23d289b87739277d4718cbfbd2f21c91efb673010aaeedda1fae87540a2dc6933ae'
+	'2ea209aec395a9d1f62e0ee9cd48ac7330f73eaa752f249cf734515c27e8be20958e31feb6849be0e6ec6325238f52e5c5a3b5f3dd3d0d86fd1ec64676a51f94')
 
 prepare() {
 	cd "$_srcdir"
