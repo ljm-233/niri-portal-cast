@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# niri-shm-doctor -- 诊断 portal 屏幕共享不出画面的原因。
+# niri-portal-doctor -- 诊断 portal 屏幕共享不出画面的原因。
 #
 # Electron 客户端（QQ、飞书等）发起 portal 屏幕共享，选择框弹出，点「分享」，然后
 # 两种情况之一发生：

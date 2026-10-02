@@ -1,8 +1,8 @@
-pkgbase = niri-shm-git
-	pkgdesc = Scrollable-tiling Wayland compositor patched so portal screen sharing works with Electron clients
+pkgbase = niri-portal-cast
+	pkgdesc = Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients
 	pkgver = 26.04.161.gc4c01f82
 	pkgrel = 4
-	url = https://github.com/ljm-233/niri-shm
+	url = https://github.com/ljm-233/niri-portal-cast
 	arch = aarch64
 	arch = x86_64
 	license = GPL-3.0-or-later
@@ -21,7 +21,7 @@ pkgbase = niri-shm-git
 	depends = seatd
 	depends = systemd-libs
 	depends = xdg-desktop-portal-gtk
-	provides = niri=26.04.161.gc4c01f82
+	provides = niri=26.04
 	provides = niri
 	conflicts = niri
 	options = !debug
@@ -35,4 +35,4 @@ pkgbase = niri-shm-git
 	b2sums = 97817f107370230943bd290d0cd44ae125b45944c50e700799705b61c56e27c564491d86114baa373b5674e49f1a0afa787859e43ac8a06755327a81096ba553
 	b2sums = 7d380dc3b9bbf93686123dcad8a3599038d208d37793371945b5575224db1428f002a5a90ad30fd4ef3921e07ea0f372f8e0cb6f04be69e2dbbcf7baf4a422b6
 
-pkgname = niri-shm-git
+pkgname = niri-portal-cast

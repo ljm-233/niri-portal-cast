@@ -1,31 +1,44 @@
-# niri-shm
+# niri-portal-cast
 
-niri 加上让 Electron 客户端（QQ、飞书等）能通过 xdg-desktop-portal 屏幕共享的补丁。
+给 niri 打补丁，让 xdg-desktop-portal 的屏幕采集在它上面真正能用。
 
-AUR 上有一个功能部分重叠的 `niri-shm-sharing`，区别见下方说明。
+没有这个补丁时，niri 下的屏幕共享对 Electron 客户端（QQ、飞书等）**完全不可用**——
+连整屏都共享不出来，不是画面黑，是根本没有画面。
 
-## 为什么需要这个补丁
+## 为什么上游不行
 
-没有这个补丁时，niri 下的屏幕共享对 Electron 客户端完全不可用：
+三个互相独立的原因，缺一不可：
 
-1. Electron 不会导入 DMA-BUF，所以 niri 必须显式提供 shm 格式。不带 `VideoModifier`
-   的格式会被当成普通线性 dmabuf，被 pipewire 以 "no more input formats" 拒绝。
-2. niri 没有在 `org.gnome.Mutter.ScreenCast` 上暴露 `AvailableSourceTypes` 和
-   `AvailableCursorModes`，`xdg-desktop-portal-gnome` 因此报告零能力，拒绝所有
-   `SelectSources` 调用。
+**一、niri 不宣告 shm 格式。** Electron 不导入 DMA-BUF，只认 shm。niri 在
+`org.gnome.Mutter.ScreenCast` 上没有暴露 shm 格式，那些不带 `VideoModifier` 的
+格式会被当成普通线性 dmabuf，被 PipeWire 以 "no more input formats" 拒绝。
 
-补丁还限制了采集帧率。`VideoFramerate` 为 0/1 时 pipewire 理解为「不限速」，会按输出
-刷新率推帧，软件 H.264 编码器来不及消费，剩余的裸帧会堆积。
+**二、niri 不宣告能力位。** `AvailableSourceTypes` 和 `AvailableCursorModes`
+没有实现，`xdg-desktop-portal-gnome` 因此读到零能力，**拒绝所有 `SelectSources`
+调用**。表现是选择窗口时只有「整个屏幕」可选。
 
-## 内容
+**三、帧率不限速。** `VideoFramerate` 宣告为 `0/1` 就是「不限速」，PipeWire 按
+输出刷新率推帧，软件 H.264 编码器来不及消费，剩余裸帧在 shm 里堆积。一开共享
+内存就往上涨，几秒内涨到几个 GiB，桌面卡死。
 
-三个 patch：
+**这个包不修内存泄漏。** 它限帧率，治的是「帧产生速度超过消费速度」导致的堆积，
+不是任何意义上的泄漏。包里没有一行释放或回收代码。
 
-- `0001-` — 新增 `available_source_types` 与 `available_cursor_modes` 属性，
-  恢复上游的 dmabuf/shm 分裂路径，限制采集帧率
-- `0002-` — 把帧率改为 `config.kdl` 里的 `screencasting { frame-rate-hz }`
-  配置项，范围 30-120，默认 60
-- `0003-` — 移除 shm buffer 池上限（见下方「关于 buffer 池」）
+## 装什么版本
+
+| 版本 | 说明 |
+|---|---|
+`niri-portal-cast` | 本包。见下。 |
+AUR `niri-shm-sharing` | 只改 `src/screencasting/pw_utils.rs`。宣告能力缺失（原因二没修），帧率仍不限速。 |
+
+简单说：`niri-shm-sharing` 只做到「能整屏共享」，本包能做到「能选单个窗口」并且
+共享期间内存不涨。
+
+实测（Arch Linux，niri Wayland 会话，QQ 通过 portal 共享单个窗口）：
+
+- 只装 `niri-shm-sharing`：选择窗口里无法选单个窗口，只能共享整屏
+- 装本包：窗口可选，pipewire 协商到 `60/1`，跑 5 分半 Shmem 在 0.8-1.5 GiB 之间
+  波动，无单向爬升
 
 ## 配置
 
@@ -35,27 +48,23 @@ screencasting {
 }
 ```
 
-不写这个块就用默认 60。超出 30-120 范围的值会被静默钳位到边界，不报错。
+范围 30-120，默认 60。超出范围的值会被静默钳位到边界，不报错。
 
-配置在 niri 启动时读取，改完要重开共享才生效。
+不写这个块就用默认 60。
 
-实测（Arch Linux，niri Wayland 会话，QQ 通过 portal 共享单个窗口，2560x1600）：
-pipewire 协商到 60/1，运行 5 分半，Shmem 在 0.8-1.5 GiB 之间波动无单向爬升。
+**配置在 niri 启动时读取**，改完要重启 niri 才生效，共享中改无效。
 
 ## 排查脚本
 
-包会装一个 `niri-shm-doctor`，共享不出画面时先跑它：
+包会装一个 `niri-portal-doctor`。共享不出画面时先跑它：
 
 ```
-niri-shm-doctor
+niri-portal-doctor
 ```
 
-它只读状态，不重启任何东西，通话中跑也安全。逐项检查会话类型、二进制是否带补丁、
-门户后端、帧率配置、niri 是否收到采集请求、Shmem 占用，以及音频图。
-
-最常见的一条是第七项：**有线和蓝牙音频输出同时在线**。WirePlumber 会在两者之间
-切换默认设备，PipeWire 重建整个图，客户端手里握的句柄全部失效。表现是选择框弹出来、
-点共享、然后崩掉或者立刻退出。解法是拔掉其中一个，只留一种输出。
+它只读状态，不重启任何东西，通话中跑也安全。逐项检查会话环境、二进制是否带补丁、
+门户后端、帧率配置、niri 是否收到采集请求、Shmem 占用，以及音频图，并指出第一个
+断掉的地方。
 
 退出码 0 表示没有阻塞性问题，1 表示有。
 
@@ -70,85 +79,72 @@ niri-shm-doctor
        解法：只留一个音频输出，然后重新共享。
 ```
 
-## 关于 buffer 池
+### 第七项值得单独说
 
-本包**不限制** shm buffer 池数量。早期的版本有一个 `max-shm-buffers`
-配置项和对应的驱逐逻辑，现已移除。
+**有线和蓝牙音频输出同时在线**时，WirePlumber 会在两者之间切换默认设备，PipeWire
+重建整个图，客户端手里握的句柄全部失效。表现是选择框弹出来、点共享、然后崩掉或者
+300 毫秒内退出，niri 日志里只有 `Paused -> Unconnected`，没有格式协商记录。
 
-原因是那个逻辑防的是不存在的机制。pipewire 通过 `StreamFlags::ALLOC_BUFFERS`
-协商 buffer 数量，niri 只分配被要求的那些，池子不会无限增长。上游维护者也指出了
-这一点（niri-wm/niri#4655）。实测印证：在 60 Hz 下共享 5 分半，驱逐逻辑一次都
-没有触发过。
+解法：拔掉其中一个，只留一种输出。
 
 ## 安装现成的包
 
-Release 里有编译好的包：
+Release 里有编译好的 x86_64 包：
 
-https://github.com/ljm-233/niri-shm/releases
+https://github.com/ljm-233/niri-portal-cast/releases
 
 ```
-sudo pacman -U niri-shm-git-*.pkg.tar.zst
+sudo pacman -U niri-portal-cast-*.pkg.tar.zst
+```
+
+会提示替换官方 `niri`（本包 `provides` 和 `conflicts` 都声明了），选 `y`。
+
+换回官方版：
+
+```
+sudo pacman -R niri-portal-cast
+sudo pacman -S niri
 ```
 
 ## 自己构建
 
 ```
+git clone https://github.com/ljm-233/niri-portal-cast.git
+cd niri-portal-cast
 makepkg -si
 ```
 
-装好后会提示替换官方 `niri`（本包 `provides` 和 `conflicts` 都声明了 `niri`），
-选 `y`。
-
 ## 跟随上游新版本
+
+PKGBUILD 锁的是具体 commit 而非 tag，原因是 v26.04 tag 上打补丁会有 6 个 hunk
+失败（上游在 tag 之后重构了 SHM 映射的生命周期管理）。
+
+更新步骤：
 
 ```
 git clone https://github.com/niri-wm/niri.git
 cd niri
+git checkout <新的基线 commit>
 git am /path/to/0001-*.patch
 # 有冲突就解决后 git am --continue
 git format-patch -1 --stdout > 新的patch文件
 ```
 
-然后更新 `PKGBUILD` 里的 `_version`、`_patched`，以及 patch 文件名和
-`b2sums`（`b2sum -g *.patch`）。
+然后更新 PKGBUILD 里的 `_upstream`、`_patched`、`pkgver`、patch 文件名和 `b2sums`
+（用 `makepkg -g` 从 `source=()` 生成，不要用 `b2sum -g`），最后
+`makepkg --printsrcinfo > .SRCINFO`。
 
 ## 已知状态
 
 补丁 commit `c4c01f82`，上游基线 `1f03391e`（main，2026-09-25）。
 
-注意这不是 niri 26.04 正式版：v26.04 tag 打于 2026-04-25，基线比它晚161 个
-提交。这161 个里包含 `pw_utils: retain SHM mappings for buffer lifetime`、
-`pw_utils: borrow SHM buffers when rendering and clearing` 等对 SHM 处理的
-重构。把这个补丁打到 v26.04 tag 上会有 6 个 hunk 应用失败，所以 PKGBUILD
-锁的是具体 commit 而非 tag。
+**这不是 niri 26.04 正式版。** v26.04 tag 打于 2026-04-25，基线比它晚 161 个提交，
+这 161 个里包含 `pw_utils: retain SHM mappings for buffer lifetime` 等对 SHM 处理的
+重构。所以 `pkgver` 写作 `26.04.161.gc4c01f82`，如实反映这一点。
 
 上游 PR #1791「Support shm sharing」已于 2026-09-12 合并。本包在此之上补了两点：
 上游合并的版本仍然不宣告 `AvailableSourceTypes` / `AvailableCursorModes`，帧率也仍是
-`0/1`（不限速）。
-
-## 与 niri-shm-sharing 的区别
-
-AUR 上的 `niri-shm-sharing`（维护者 onez3r0，补丁来自 `rucnyz/niri`）同样给 niri
-打 SHM 补丁，只改 `src/screencasting/pw_utils.rs` 一个文件。区别在于：
-
-- **它不宣告 `AvailableSourceTypes` 和 `AvailableCursorModes`**。这两个属性定义在
-  `src/dbus/mutter_screen_cast.rs`，它的补丁没碰那个文件。缺了它们，
-  `xdg-desktop-portal-gnome` 会向 niri 读到零能力，拒绝所有 `SelectSources` 调用，
-  表现为选择窗口时只有「整个屏幕」可选。
-- **它的 `VideoFramerate` 宣告为 `{num: 0, denom: 1}`**，也就是不限速。pipewire 会按
-  输出刷新率推帧，而 Electron 端的软件 H.264 编码器来不及消费，剩余裸帧持续堆积。
-  本包通过 `screencasting { frame-rate-hz }` 给采集侧一个可配置的上限。
-- **它的 `pkgver` 写作 `26.04`**，实际 pin 在 commit `8ed0da44`；本包写作
-  `26.04.161.gc4c01f82`，如实反映基线比v26.04 tag 晚161 个提交。
-
-实测（Arch Linux，niri Wayland 会话，QQ 通过 portal 共享）：
-
-- 只装 `niri-shm-sharing` 时，选择窗口里无法选单个窗口，只能共享整屏。
-- 换成本包后选择窗口可用，共享期间内存稳定（QQ 13 进程 RSS 合计约 2.6 GB），
-  不再出现共享一开始就爆内存卡死。
-
-如果你要的只是「能整屏共享」，两个包都可以；如果需要选单个窗口，或者内存一开共享
-就往上涨，换成这个。
+`0/1`。
 
 ## 许可证
 

@@ -1,8 +1,16 @@
-# niri with the screencasting patches needed for portal-based screen sharing
-# with Electron clients (QQ, Feishu, ...).
+# niri with the screencasting patches that make portal-based screen capture
+# work at all on it.
 #
-# The patch makes niri offer a shm format to portal clients and caps the
-# capture frame rate; without it those clients get no picture at all.
+# Without these patches niri offers no shm format and does not advertise
+# AvailableSourceTypes / AvailableCursorModes on the mutter screen cast
+# interface, so xdg-desktop-portal-gnome reports zero capability and refuses
+# every SelectSources call. Electron clients (QQ, Feishu, ...) get no picture
+# whatsoever, not even a full-screen one.
+#
+# The patches also put a ceiling on the capture frame rate. Advertising
+# VideoFramerate 0/1 means "unlimited", which makes PipeWire push frames at the
+# output refresh rate; a software encoder cannot drain them fast enough and the
+# leftover raw frames pile up in shm.
 #
 # To follow a new upstream release:
 #   1. rebase the patch onto the new tag
@@ -13,20 +21,23 @@
 # Build with:
 #   makepkg -si
 
-pkgname=niri-shm-git
+pkgname=niri-portal-cast
 # v26.04 was tagged 2026-04-25; the pinned upstream commit is 161 commits
 # later, so call this 26.04.161.gc4c01f82 rather than pretending it is the
 # release itself.
 pkgver=26.04.161.gc4c01f82
 pkgrel=4
-pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen sharing works with Electron clients"
+pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
 arch=(aarch64 x86_64)
-url="https://github.com/ljm-233/niri-shm"
+url="https://github.com/ljm-233/niri-portal-cast"
 license=(GPL-3.0-or-later)
 depends=(cairo gcc-libs glib2 glibc libinput libpipewire libxkbcommon mesa pango pixman
 	 seatd systemd-libs xdg-desktop-portal-gtk)
 makedepends=(clang rust)
-provides=("niri=$pkgver" "niri")
+# The build is pinned to a commit past the v26.04 tag, so it cannot honestly
+# claim niri=26.04.161.gc4c01f82 -- that version does not exist upstream, and
+# a dependency on it could never be satisfied. Claim the release it descends from.
+provides=("niri=26.04" "niri")
 conflicts=("niri")
 options=(!debug !lto)
 # Upstream baseline. This is main at 1f03391e, i.e. 161 commits after the
@@ -86,5 +97,5 @@ package() {
 	# restarts anything, so it is safe to run mid-call.
 	# $srcdir is the download cache and does not contain the script, so it is
 	# taken from the build directory (startdir) instead.
-	install -Dm755 "$startdir/niri-shm-doctor.sh" "$pkgdir"/usr/bin/niri-shm-doctor
+	install -Dm755 "$startdir/niri-portal-doctor.sh" "$pkgdir"/usr/bin/niri-portal-doctor
 }
