@@ -136,11 +136,15 @@ git format-patch -1 --stdout > 新的patch文件
 
 ## 已知状态
 
-补丁 commit `c4c01f82`，上游基线 `1f03391e`（main，2026-09-25）。
+补丁 commit `61dc3de4`，上游基线 `ed22699d`（main，2026-10-02）。
 
-**这不是 niri 26.04 正式版。** v26.04 tag 打于 2026-04-25，基线比它晚 161 个提交，
-这 161 个里包含 `pw_utils: retain SHM mappings for buffer lifetime` 等对 SHM 处理的
-重构。所以 `pkgver` 写作 `26.04.161.gc4c01f82`，如实反映这一点。
+**这不是 niri 26.04 正式版。** v26.04 tag 打于 2026-04-25，基线比它晚 165 个提交，
+这 165 个里包含 `pw_utils: retain SHM mappings for buffer lifetime` 等对 SHM 处理的
+重构。所以补丁只能打在具体 commit 上，打 tag 会失败 6 个 hunk。
+
+包的版本号是**构建日期加当天序号**（如 `2026.10.3-7`），不反映上游版本。原因是
+日期版本在 pacman 里严格递增，而 `26.0.7` 这类语义版本会排在之前的
+`26.04.165.g61dc3de4` 后面，每次安装都得加 `--allow-downgrade`。
 
 上游 PR #1791「Support shm sharing」已于 2026-09-12 合并。本包在此之上补了两点：
 上游合并的版本仍然不宣告 `AvailableSourceTypes` / `AvailableCursorModes`，帧率也仍是

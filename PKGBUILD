@@ -22,11 +22,13 @@
 #   makepkg -si
 
 pkgname=niri-portal-cast
-# v26.04 was tagged 2026-04-25; the pinned upstream commit is 165 commits
-# later, so call this 26.04.165.g61dc3de4 rather than pretending it is the
-# release itself.
-pkgver=26.04.165.g61dc3de4
-pkgrel=6
+# pkgver is the date this package was built plus a same-day counter, not the
+# upstream version. The upstream baseline is pinned separately in _upstream
+# and _patched below; a date-based version is what keeps pacman's ordering
+# correct, because a semantic version like 26.0.7 would sort below the
+# previous 26.04.165.g61dc3de4 and every install would need --allow-downgrade.
+pkgver=2026.10.3
+pkgrel=7
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
 arch=(x86_64)
 url="https://github.com/ljm-233/niri-portal-cast"
@@ -35,8 +37,9 @@ depends=(cairo gcc-libs glib2 glibc libinput libpipewire libxkbcommon mesa pango
 	 seatd systemd-libs xdg-desktop-portal-gtk)
 makedepends=(clang rust)
 # The build is pinned to a commit past the v26.04 tag, so it cannot honestly
-# claim niri=26.04.165.g61dc3de4 -- that version does not exist upstream, and
-# a dependency on it could never be satisfied. Claim the release it descends from.
+# claim niri=<the pinned commit> -- that version does not exist upstream, and
+# a dependency on it could never be satisfied. Claim the release it descends
+# from instead.
 provides=("niri=26.04" "niri")
 conflicts=("niri")
 options=(!debug !lto)

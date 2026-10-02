@@ -135,18 +135,30 @@ fi
 
 if have journalctl; then
 	rm_count=$(journalctl --user -u niri.service --since '-30min' --no-pager 2>/dev/null | grep -c 'record_monitor')
-	neg_count=$(journalctl --user -u niri.service --since '-30min' --no-pager 2>/dev/null | grep -c 'negotiated')
+	# Count sessions that actually reached Streaming, not log lines matching
+	# 'negotiated'. A successful shm negotiation does not print that word; it
+	# shows up as "negotiated inefficient shm stream" only when the stream is
+	# up. Counting the former flagged working sessions as failures.
+	stream_count=$(journalctl --user -u niri.service --since '-30min' --no-pager 2>/dev/null | grep -c 'Paused -> Streaming')
 	if [ "$rm_count" -eq 0 ]; then
 		info "最近 30 分钟没有任何采集请求"
 		printf '       niri 根本没被叫到，问题在上游：门户选择框或者客户端本身。\n'
-	elif [ "$neg_count" -eq 0 ]; then
+	elif [ "$stream_count" -eq 0 ]; then
 		bad "有 $rm_count 次采集请求，但 0 次格式协商"
 		printf '       客户端要了屏幕，然后在告诉 niri 它想要什么格式之前就放弃了。\n'
 		printf '       常见原因是选择框被关掉，或者协商途中 PipeWire 出了事件（音频\n'
 		printf '       设备切换、蓝牙连上）把整个图拆了。\n'
 		printf '       解法：只留一个音频输出，然后重新共享。\n'
 	else
-		ok "$rm_count 次请求，$neg_count 次格式协商"
+		ok "$rm_count 次请求，$stream_count 次成功出流"
+		# Which path the client picked tells us more than pass/fail: modifier
+		# 0 with flags 0x0 is the shm path this package advertises, anything
+		# else is a dmabuf with a hardware modifier.
+		fps=$(journalctl --user -u niri.service --since '-30min' --no-pager 2>/dev/null |
+			grep -oE 'framerate: spa_fraction \{ num: [0-9]+' | tail -1 | grep -oE '[0-9]+$')
+		if [ -n "$fps" ]; then
+			ok "最近一次协商到的帧率 ${fps} Hz"
+		fi
 	fi
 fi
 
