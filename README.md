@@ -19,12 +19,38 @@ AUR 上有一个功能部分重叠的 `niri-shm-sharing`，区别见下方说明
 
 ## 内容
 
-改动两个文件，共 222 行：
+三个 patch：
 
-- `src/dbus/mutter_screen_cast.rs` — 新增 `available_source_types` 与
-  `available_cursor_modes` 属性
-- `src/screencasting/pw_utils.rs` — 恢复上游的 dmabuf/shm 分裂路径，固定 30fps，
-  并把 shm buffer 池限制在 32 个以内
+- `0001-` — 新增 `available_source_types` 与 `available_cursor_modes` 属性，
+  恢复上游的 dmabuf/shm 分裂路径，限制采集帧率
+- `0002-` — 把帧率改为 `config.kdl` 里的 `screencasting { frame-rate-hz }`
+  配置项，范围 30-120，默认 60
+- `0003-` — 移除 shm buffer 池上限（见下方「关于 buffer 池」）
+
+## 配置
+
+```kdl
+screencasting {
+    frame-rate-hz 60
+}
+```
+
+不写这个块就用默认 60。超出 30-120 范围的值会被静默钳位到边界，不报错。
+
+配置在 niri 启动时读取，改完要重开共享才生效。
+
+实测（Arch Linux，niri Wayland 会话，QQ 通过 portal 共享单个窗口，2560x1600）：
+pipewire 协商到 60/1，运行 5 分半，Shmem 在 0.8-1.5 GiB 之间波动无单向爬升。
+
+## 关于 buffer 池
+
+本包**不限制** shm buffer 池数量。早期的版本有一个 `max-shm-buffers`
+配置项和对应的驱逐逻辑，现已移除。
+
+原因是那个逻辑防的是不存在的机制。pipewire 通过 `StreamFlags::ALLOC_BUFFERS`
+协商 buffer 数量，niri 只分配被要求的那些，池子不会无限增长。上游维护者也指出了
+这一点（niri-wm/niri#4655）。实测印证：在 60 Hz 下共享 5 分半，驱逐逻辑一次都
+没有触发过。
 
 ## 安装现成的包
 
@@ -68,7 +94,9 @@ git format-patch -1 --stdout > 新的patch文件
 重构。把这个补丁打到 v26.04 tag 上会有 6 个 hunk 应用失败，所以 PKGBUILD
 锁的是具体 commit 而非 tag。
 
-上游 PR #1791 里有类似的 SHM 改动，但截至打包时尚未并入 main。
+上游 PR #1791「Support shm sharing」已于 2026-09-12 合并。本包在此之上补了两点：
+上游合并的版本仍然不宣告 `AvailableSourceTypes` / `AvailableCursorModes`，帧率也仍是
+`0/1`（不限速）。
 
 ## 与 niri-shm-sharing 的区别
 
@@ -81,17 +109,15 @@ AUR 上的 `niri-shm-sharing`（维护者 onez3r0，补丁来自 `rucnyz/niri`�
   表现为选择窗口时只有「整个屏幕」可选。
 - **它的 `VideoFramerate` 宣告为 `{num: 0, denom: 1}`**，也就是不限速。pipewire 会按
   输出刷新率推帧，而 Electron 端的软件 H.264 编码器来不及消费，剩余裸帧持续堆积。
-  本包的补丁固定 30fps（`CAST_FRAME_RATE_HZ`），给采集侧一个硬上限。
-- **它没有限制 SHM buffer 池**。本包把 `MAX_SHM_BUFFERS` 压到 32，超出的帧直接丢弃，
-  而不是一直等客户端释放。
+  本包通过 `screencasting { frame-rate-hz }` 给采集侧一个可配置的上限。
 - **它的 `pkgver` 写作 `26.04`**，实际 pin 在 commit `8ed0da44`；本包写作
   `26.04.161.gc4c01f82`，如实反映基线比v26.04 tag 晚161 个提交。
 
 实测（Arch Linux，niri Wayland 会话，QQ 通过 portal 共享）：
 
 - 只装 `niri-shm-sharing` 时，选择窗口里无法选单个窗口，只能共享整屏。
-- 换成本包后选择窗口可用，共享期间内存稳定（QQ 13 进程 RSS 合计约 2.6 GB，
-  Shmem 约 570 MB），不再出现共享一开始就爆内存卡死。
+- 换成本包后选择窗口可用，共享期间内存稳定（QQ 13 进程 RSS 合计约 2.6 GB），
+  不再出现共享一开始就爆内存卡死。
 
 如果你要的只是「能整屏共享」，两个包都可以；如果需要选单个窗口，或者内存一开共享
 就往上涨，换成这个。

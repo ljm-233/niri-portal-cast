@@ -18,7 +18,7 @@ pkgname=niri-shm-git
 # later, so call this 26.04.161.gc4c01f82 rather than pretending it is the
 # release itself.
 pkgver=26.04.161.gc4c01f82
-pkgrel=2
+pkgrel=3
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen sharing works with Electron clients"
 arch=(aarch64 x86_64)
 url="https://github.com/ljm-233/niri-shm"
@@ -37,17 +37,19 @@ options=(!debug !lto)
 _upstream=1f03391ea644c2a43597de7f637269e26d1e1b49
 # Short hash of the commit carrying the patch, so `niri --version` reports
 # something more useful than "unknown commit".
-_patched=9d640bcd
+_patched=b5d62c3b
 _srcdir=niri
 _patchfiles=(
 	0001-screencasting-advertise-SHM-and-bound-frame-rate.patch
 	0002-screencasting-configurable-frame-rate-and-buffer-pool.patch
+	0003-screencasting-drop-nonexistent-shm-buffer-bound.patch
 )
 source=("git+https://github.com/niri-wm/niri.git#commit=$_upstream"
 	"${_patchfiles[@]}")
 b2sums=('SKIP'
 	'36ec8b2265271fd73b595fc4a82138f95eac695673042553936fd8db7183cb8214190f03723368d739929feebc3a384b53882d220bda88ff16ef2605b58bb39c'
-	'97817f107370230943bd290d0cd44ae125b45944c50e700799705b61c56e27c564491d86114baa373b5674e49f1a0afa787859e43ac8a06755327a81096ba553')
+	'97817f107370230943bd290d0cd44ae125b45944c50e700799705b61c56e27c564491d86114baa373b5674e49f1a0afa787859e43ac8a06755327a81096ba553'
+	'7d380dc3b9bbf93686123dcad8a3599038d208d37793371945b5575224db1428f002a5a90ad30fd4ef3921e07ea0f372f8e0cb6f04be69e2dbbcf7baf4a422b6')
 
 prepare() {
 	cd "$_srcdir"

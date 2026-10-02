@@ -1,0 +1,225 @@
+From b5d62c3bf87eaf31f14913046263007087e619cc Mon Sep 17 00:00:00 2001
+From: ljm-233 <2836583630@qq.com>
+Date: Fri, 2 Oct 2026 10:47:33 +0800
+Subject: [PATCH] screencasting: drop the shmem buffer pool bound
+
+It defended against a mechanism that does not exist. PipeWire negotiates
+the buffer count for the stream and niri only allocates what it is asked
+for via StreamFlags::ALLOC_BUFFERS, so the pool never grew past the
+negotiated size. Measured across a 5.5 minute share at 60 Hz, the eviction
+loop never fired once.
+
+Upstream maintainer pointed this out in niri-wm/niri#4655: "The buffer
+count is negotiated in PipeWire too, and niri has a limit of 16 buffers I
+believe, so if it grows larger than that then it's a bug in PipeWire."
+
+A note in the config module records why it is not there, so the next
+person does not add it back.
+---
+ docs/wiki/Configuration:-Miscellaneous.md |  1 -
+ niri-config/src/lib.rs                    |  1 -
+ niri-config/src/screencasting.rs          | 31 +++++------------------
+ src/screencasting/pw_utils.rs             | 24 ------------------
+ 4 files changed, 7 insertions(+), 50 deletions(-)
+
+diff --git a/docs/wiki/Configuration:-Miscellaneous.md b/docs/wiki/Configuration:-Miscellaneous.md
+index d7dc35f5..8c60934f 100644
+--- a/docs/wiki/Configuration:-Miscellaneous.md
++++ b/docs/wiki/Configuration:-Miscellaneous.md
+@@ -26,7 +26,6 @@ cursor {
+ 
+ screencasting {
+     frame-rate-hz 60
+-    max-shm-buffers 32
+ }
+ 
+ overview {
+diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
+index 4a4c5467..b8c8439d 100644
+--- a/niri-config/src/lib.rs
++++ b/niri-config/src/lib.rs
+@@ -2314,7 +2314,6 @@ mod tests {
+             },
+             screencasting: Screencasting {
+                 frame_rate_hz: 60,
+-                max_shm_buffers: 32,
+             },
+             workspaces: [
+                 Workspace {
+diff --git a/niri-config/src/screencasting.rs b/niri-config/src/screencasting.rs
+index f7e7cc70..dede6232 100644
+--- a/niri-config/src/screencasting.rs
++++ b/niri-config/src/screencasting.rs
+@@ -2,20 +2,22 @@ use crate::utils::MergeWith;
+ 
+ /// Screencasting limits that keep portal screen sharing usable with clients
+ /// that cannot keep up with a full-rate raw stream (Electron/QQ, Feishu, ...).
++///
++/// There is deliberately no shmem buffer pool bound here. PipeWire negotiates
++/// the buffer count for the stream and niri only allocates what it is asked
++/// for (`StreamFlags::ALLOC_BUFFERS`), so an earlier version of this patch
++/// that evicted the oldest buffer past a hard limit was defending against a
++/// mechanism that does not exist. It never triggered in practice.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct Screencasting {
+     /// Frame rate advertised to clients, in Hz.
+     pub frame_rate_hz: u32,
+-    /// Hard cap on shmem buffers kept per stream.
+-    pub max_shm_buffers: usize,
+ }
+ 
+ #[derive(knuffel::Decode, Debug, Default, PartialEq)]
+ pub struct ScreencastingPart {
+     #[knuffel(child, unwrap(argument))]
+     pub frame_rate_hz: Option<u32>,
+-    #[knuffel(child, unwrap(argument))]
+-    pub max_shm_buffers: Option<usize>,
+ }
+ 
+ impl Screencasting {
+@@ -23,37 +25,25 @@ impl Screencasting {
+     pub const FRAME_RATE_MAX: u32 = 120;
+     pub const FRAME_RATE_DEFAULT: u32 = 60;
+ 
+-    /// One buffer is a full raw frame: at the default capture size
+-    /// (2560x1600 BGRA) that is 16 MiB, so this bound doubles as the memory
+-    /// ceiling for a client that stops consuming.
+-    pub const SHM_BUFFERS_MIN: usize = 8;
+-    pub const SHM_BUFFERS_MAX: usize = 256;
+-    pub const SHM_BUFFERS_DEFAULT: usize = 32;
+-
+     /// Out-of-range values are clamped rather than rejected, so a typo cannot
+     /// leave the compositor advertising a rate that stalls the machine.
+     pub fn frame_rate_hz(&self) -> u32 {
+         self.frame_rate_hz.clamp(Self::FRAME_RATE_MIN, Self::FRAME_RATE_MAX)
+     }
+ 
+-    pub fn max_shm_buffers(&self) -> usize {
+-        self.max_shm_buffers
+-            .clamp(Self::SHM_BUFFERS_MIN, Self::SHM_BUFFERS_MAX)
+-    }
+ }
+ 
+ impl Default for Screencasting {
+     fn default() -> Self {
+         Self {
+             frame_rate_hz: Self::FRAME_RATE_DEFAULT,
+-            max_shm_buffers: Self::SHM_BUFFERS_DEFAULT,
+         }
+     }
+ }
+ 
+ impl MergeWith<ScreencastingPart> for Screencasting {
+     fn merge_with(&mut self, part: &ScreencastingPart) {
+-        merge_clone!((self, part), frame_rate_hz, max_shm_buffers);
++        merge_clone!((self, part), frame_rate_hz);
+     }
+ }
+ 
+@@ -65,33 +55,26 @@ mod tests {
+     fn defaults_match_the_documented_values() {
+         let s = Screencasting::default();
+         assert_eq!(s.frame_rate_hz(), 60);
+-        assert_eq!(s.max_shm_buffers(), 32);
+     }
+ 
+     #[test]
+     fn out_of_range_values_are_clamped() {
+         let too_fast = Screencasting {
+             frame_rate_hz: 500,
+-            max_shm_buffers: 10_000,
+         };
+         assert_eq!(too_fast.frame_rate_hz(), Screencasting::FRAME_RATE_MAX);
+-        assert_eq!(too_fast.max_shm_buffers(), Screencasting::SHM_BUFFERS_MAX);
+ 
+         let too_slow = Screencasting {
+             frame_rate_hz: 1,
+-            max_shm_buffers: 0,
+         };
+         assert_eq!(too_slow.frame_rate_hz(), Screencasting::FRAME_RATE_MIN);
+-        assert_eq!(too_slow.max_shm_buffers(), Screencasting::SHM_BUFFERS_MIN);
+     }
+ 
+     #[test]
+     fn values_inside_the_range_pass_through() {
+         let s = Screencasting {
+             frame_rate_hz: 30,
+-            max_shm_buffers: 64,
+         };
+         assert_eq!(s.frame_rate_hz(), 30);
+-        assert_eq!(s.max_shm_buffers(), 64);
+     }
+ }
+diff --git a/src/screencasting/pw_utils.rs b/src/screencasting/pw_utils.rs
+index a9784f77..dccd591a 100644
+--- a/src/screencasting/pw_utils.rs
++++ b/src/screencasting/pw_utils.rs
+@@ -90,7 +90,6 @@ pub struct PipeWire {
+     /// Screencast limits, read from the niri config at startup. A config reload
+     /// only applies to newly started casts.
+     frame_rate_hz: u32,
+-    max_shm_buffers: usize,
+ }
+ 
+ pub enum PwToNiri {
+@@ -129,8 +128,6 @@ struct CastInner {
+     state: CastState,
+     refresh: u32,
+     min_time_between_frames: Duration,
+-    /// Bound on the shmem buffer pool for this stream, from the config.
+-    max_shm_buffers: usize,
+     dmabufs: HashMap<i64, Dmabuf>,
+     shmbufs: HashMap<i64, Shmbuf>,
+     /// Buffers dequeued from PipeWire in process of rendering.
+@@ -455,7 +452,6 @@ impl PipeWire {
+             event_loop,
+             to_niri,
+             frame_rate_hz: screencasting.frame_rate_hz(),
+-            max_shm_buffers: screencasting.max_shm_buffers(),
+         })
+     }
+ 
+@@ -476,7 +472,6 @@ impl PipeWire {
+         let _span = debug_span!("start_cast", %session_id).entered();
+ 
+         let frame_rate_hz = self.frame_rate_hz;
+-        let max_shm_buffers = self.max_shm_buffers;
+ 
+         let to_niri_ = self.to_niri.clone();
+         let stop_cast = move || {
+@@ -523,7 +518,6 @@ impl PipeWire {
+             state: CastState::ResizePending { pending_size },
+             refresh,
+             min_time_between_frames: Duration::ZERO,
+-            max_shm_buffers,
+             dmabufs: HashMap::new(),
+             shmbufs: HashMap::new(),
+             rendering_buffers: Vec::new(),
+@@ -1582,24 +1576,6 @@ impl CastInner {
+ 
+                     let fd = (*(*spa_buffer).datas).fd;
+                     assert!(self.shmbufs.insert(fd, shmbuf).is_none());
+-
+-                    // Bound the pool. Clients that stop draining the stream
+-                    // (Electron-based screen sharing does) never return their
+-                    // buffers, so on_remove_buffer never runs and the map -
+-                    // and the shmem behind it - grows until the machine runs
+-                    // out of RAM. Evicting the oldest entry drops our
+-                    // reference, so once the client lets go the kernel frees
+-                    // the pages.
+-                    while self.shmbufs.len() > self.max_shm_buffers {
+-                        let Some(oldest) = self.shmbufs.keys().next().copied() else {
+-                            break;
+-                        };
+-                        warn!(
+-                            "shm buffer pool over {}, evicting fd={oldest}",
+-                            self.max_shm_buffers
+-                        );
+-                        self.shmbufs.remove(&oldest);
+-                    }
+                 }
+ 
+                 Ok(self.shmbufs.len() == 1)
+-- 
+2.56.0
+
