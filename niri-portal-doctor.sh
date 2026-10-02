@@ -55,16 +55,16 @@ head_ "【二】二进制是否带补丁"
 
 if ! have niri; then
 	bad "PATH 里找不到 niri"
-elif strings /usr/bin/niri 2>/dev/null | grep -q 'frame_rate_hz'; then
-	ok "二进制带有屏幕共享补丁"
 elif have pacman && pacman -Qo /usr/bin/niri >/dev/null 2>&1; then
 	owner=$(pacman -Qo /usr/bin/niri 2>/dev/null | head -1)
-	if printf '%s' "$owner" | grep -q 'niri-shm'; then
-		pkgver=$(printf '%s' "$owner" | grep -oE 'niri-shm[^ ]*' | head -1)
+	if printf '%s' "$owner" | grep -q 'niri-portal-cast'; then
+		pkgver=$(printf '%s' "$owner" | grep -oE 'niri-portal-cast[^ ]*' | head -1)
 		ok "二进制来自 $pkgver"
 	else
-		warn "/usr/bin/niri 不来自 niri-shm，多半是官方原版"
+		warn "/usr/bin/niri 来自 ${owner##* }，不是本包，多半是官方原版"
 		printf '       原版 niri 不宣告 shm 格式，Electron 客户端完全拿不到画面。\n'
+		printf '       本包的名字是 niri-portal-cast；如果装过旧版 niri-shm-git，\n'
+		printf '       先 sudo pacman -Rns niri-shm-git 再装。\n'
 	fi
 else
 	warn "无法判断 /usr/bin/niri 是否带补丁"

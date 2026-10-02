@@ -26,7 +26,7 @@ pkgname=niri-portal-cast
 # later, so call this 26.04.165.g61dc3de4 rather than pretending it is the
 # release itself.
 pkgver=26.04.165.g61dc3de4
-pkgrel=5
+pkgrel=6
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
 arch=(x86_64)
 url="https://github.com/ljm-233/niri-portal-cast"
