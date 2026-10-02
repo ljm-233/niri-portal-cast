@@ -18,7 +18,7 @@ pkgname=niri-shm-git
 # later, so call this 26.04.161.gc4c01f82 rather than pretending it is the
 # release itself.
 pkgver=26.04.161.gc4c01f82
-pkgrel=3
+pkgrel=4
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen sharing works with Electron clients"
 arch=(aarch64 x86_64)
 url="https://github.com/ljm-233/niri-shm"
@@ -82,4 +82,9 @@ package() {
 	install -Dm644 resources/default-config.kdl -t "$pkgdir"/usr/share/doc/$pkgname/
 	install -Dm644 resources/niri.desktop -t "$pkgdir"/usr/share/wayland-sessions/
 	install -Dm644 resources/niri-portals.conf -t "$pkgdir"/usr/share/xdg-desktop-portal/
+	# Diagnostics for "I click share and get nothing". Reads state only, never
+	# restarts anything, so it is safe to run mid-call.
+	# $srcdir is the download cache and does not contain the script, so it is
+	# taken from the build directory (startdir) instead.
+	install -Dm755 "$startdir/niri-shm-doctor.sh" "$pkgdir"/usr/bin/niri-shm-doctor
 }
