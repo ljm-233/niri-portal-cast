@@ -28,7 +28,7 @@ pkgname=niri-portal-cast
 # correct, because a semantic version like 26.0.7 would sort below the
 # previous 26.04.165.g61dc3de4 and every install would need --allow-downgrade.
 pkgver=2026.10.3
-pkgrel=10
+pkgrel=11
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
 arch=(x86_64)
 url="https://github.com/ljm-233/niri-portal-cast"
@@ -103,4 +103,7 @@ package() {
 	# $srcdir is the download cache and does not contain the script, so it is
 	# taken from the build directory (startdir) instead.
 	install -Dm755 "$startdir/niri-portal-doctor.sh" "$pkgdir"/usr/bin/niri-portal-doctor
+	# 改共享档位的小工具：只动 config.kdl 的 screencasting 段，临时文件+校验+原子替换，
+	# 写完还会回查 journal，运行中的 niri 不接受就自动回滚。
+	install -Dm755 "$startdir/niri-portal-cast-tune.sh" "$pkgdir"/usr/bin/niri-portal-cast-tune
 }

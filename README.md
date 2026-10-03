@@ -293,6 +293,28 @@ git format-patch -1 --stdout > 新的patch文件
 上游合并的版本仍然不宣告 `AvailableSourceTypes` / `AvailableCursorModes`，帧率也仍是
 `0/1`。
 
+## 改档位不用手编配置
+
+包里带一个 `niri-portal-cast-tune`：
+
+```
+niri-portal-cast-tune              # 看当前设置
+niri-portal-cast-tune menu         # 分开选：① 分辨率 → ② 帧率
+niri-portal-cast-tune menu-res     # 只弹分辨率
+niri-portal-cast-tune menu-fps     # 只弹帧率
+niri-portal-cast-tune 1080p|2k|2.5k|720p|smooth|balanced|saver|safe
+niri-portal-cast-tune fps 30       # 只改帧率
+niri-portal-cast-tune size 1920x1080   # 只改分辨率（off = 不限制）
+```
+
+它只改 `config.kdl` 里 `screencasting { }` 那一段，三道安全网：新内容先写临时文件并
+`niri validate`，通过才**原子替换**（niri 的文件监视器不会看到写了一半的配置）；写完后
+回查 journal，**正在运行的那个 niri** 若不接受就自动回滚；如果运行中的 niri 比磁盘上的
+二进制旧（刚升级还没重启），它会自动跳过对方不认识的选项，只改认识的。每次改动都留
+`config.kdl.bak-<时间戳>`。
+
+限制值是**每次开始共享时读**的，所以改完重开一次共享就生效，不用重启 niri。
+
 ## 许可证
 
 GPL-3.0-or-later，与 niri 本身一致。
