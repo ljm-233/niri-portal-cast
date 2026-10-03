@@ -40,6 +40,24 @@ AUR `niri-shm-sharing` | 只改 `src/screencasting/pw_utils.rs`。宣告能力�
 - 装本包：窗口可选，pipewire 协商到 `60/1`，跑 5 分半 Shmem 在 0.8-1.5 GiB 之间
   波动，无单向爬升
 
+限帧的效果可以在 journal 里直接对比。同一天两次共享，同一台机器：
+
+```
+# 没有限帧（旧构建）
+framerate: spa_fraction { num: 0, denom: 1 }              # 不限速
+max_framerate: spa_fraction { num: 240000, denom: 1000 } # 240 Hz
+
+# 有本包
+framerate: spa_fraction { num: 60, denom: 1 }
+max_framerate: spa_fraction { num: 60, denom: 1 }
+```
+
+不限速那次系统可用内存从 12 GB 掉到 1 GB 以内，机器卡到没法操作，niri 进程本身
+没有崩溃（journal 里 0 次 OOM）；限帧后跑几分钟 Shmem 稳定在 1.1-1.2 GiB 零漂移。
+
+**两个数字都要看**，`framerate` 和 `max_framerate` 一起降下来才是真的限住了，
+只降一个不管用。
+
 ## 配置
 
 ```kdl
@@ -68,6 +86,12 @@ niri-portal-doctor
 
 退出码 0 表示没有阻塞性问题，1 表示有。
 
+还有一个通用的
+[`wayland-cast-doctor`](https://github.com/ljm-233/wayland-cast-doctor)，
+不绑定任何合成器，Hyprland / Sway / GNOME / KDE 都能跑。两个不冲突，排查顺序建议
+先跑 `niri-portal-doctor`——它知道本包打了什么补丁，能顺带确认 `/usr/bin/niri` 确实
+来自这里；确认没问题再跑通用的那个。
+
 输出示例：
 
 ```
@@ -86,6 +110,15 @@ niri-portal-doctor
 300 毫秒内退出，niri 日志里只有 `Paused -> Unconnected`，没有格式协商记录。
 
 解法：拔掉其中一个，只留一种输出。
+
+### 共享成功时也要看一眼帧率
+
+第五项在成功时不止报次数，还会报**实际协商到的帧率**。这个数字直接反映本包的
+`frame-rate-hz` 有没有生效——正常是配置值（默认 60）。
+
+看到 `0/1`（不限速）说明这个补丁没在生效：配置只在 niri 启动时读一次，改完
+`config.kdl` 没重启是不算的。确认办法是跑第二项，它会报当前二进制来自哪个包、
+commit 是多少。
 
 ## 安装现成的包
 
@@ -136,7 +169,7 @@ git format-patch -1 --stdout > 新的patch文件
 
 ## 已知状态
 
-补丁 commit `61dc3de4`，上游基线 `ed22699d`（main，2026-10-02）。
+补丁 commit `61dc3de4`，上游基线 `ed22699d`（main，2026-10-01）。
 
 **这不是 niri 26.04 正式版。** v26.04 tag 打于 2026-04-25，基线比它晚 165 个提交，
 这 165 个里包含 `pw_utils: retain SHM mappings for buffer lifetime` 等对 SHM 处理的
