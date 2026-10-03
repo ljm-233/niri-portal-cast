@@ -40,6 +40,12 @@ AUR `niri-shm-sharing` | 只改 `src/screencasting/pw_utils.rs`。宣告能力�
 - 装本包：窗口可选，pipewire 协商到 `60/1`，跑 5 分半 Shmem 在 0.8-1.5 GiB 之间
   波动，无单向爬升
 
+> **2026-10-03 复验：上面这组数字在当时的 `-7` 构建（rebase 到 `ed22699d`）上没有
+> 复现，结论按未确认处理。** 同一天重启后实测：共享开始 30 秒内 Shmem 从 1.2 GiB
+> 涨到 11.5 GiB，共享结束立刻回落到 0.4 GiB，帧率上限没能把它压住。两次测试之间
+> 的差异目前只在基线：`-7` 起基线含有上游 `pw_utils` 的 SHM 映射生命周期重构。
+> 机制尚未确认，本 README 不据此改结论，也不在确认前动补丁。
+
 限帧的效果可以在 journal 里直接对比。同一天两次共享，同一台机器：
 
 ```
@@ -70,7 +76,28 @@ screencasting {
 
 不写这个块就用默认 60。
 
-**配置在 niri 启动时读取**，改完要重启 niri 才生效，共享中改无效。
+**配置在 niri 启动时读取**，改完要重启 niri 才生效，共享中改无效。补丁是在
+`PipeWire::new()` 里一次性取走这个值的，而 PipeWire 在 niri 启动时构造，所以
+`niri msg action load-config-file` 也改不动它——它只重载界面相关的配置。判断
+「到底生效了没有」不要看配置文件，看 journal：
+
+```
+journalctl --user -u niri.service --since '-30min' | grep 'framerate: spa_fraction'
+```
+
+那里的 `num` 才是 PipeWire 真正拿到的帧率。
+
+**不要写 `max-shm-buffers`。** 补丁 0003 已经把它删掉了，理由见该补丁的提交信息
+（它防的是一个不存在的机制：buffer 数由 PipeWire 协商，niri 只按
+`StreamFlags::ALLOC_BUFFERS` 分配）。niri 的配置解析拒绝未知节点，写了这个键
+**niri 会直接拒绝启动**，journal 里只有一行：
+
+```
+× unexpected node `max-shm-buffers`
+```
+
+`niri-portal-doctor` 的【四】会同时报出配置值和最近一次实际协商值，能确认合成器
+启动时刻时，两者不一致按故障处理；拿不到启动时刻时只提醒，不做断言。
 
 ## 排查脚本
 
@@ -81,10 +108,22 @@ niri-portal-doctor
 ```
 
 它只读状态，不重启任何东西，通话中跑也安全。逐项检查会话环境、二进制是否带补丁、
-门户后端、帧率配置、niri 是否收到采集请求、Shmem 占用，以及音频图，并指出第一个
-断掉的地方。
+门户后端、帧率配置**是否真的生效**、niri 是否收到采集请求、Shmem 占用与 shmem 大页
+策略，以及音频图，并指出第一个断掉的地方。
+
+【四】不看「配置文件里写了什么」就报正常：它拿配置值和 journal 里最近一次实际协商
+到的 `framerate: spa_fraction` 对比，并用合成器启动时刻判断配置是不是启动之后才改的。
+配置没生效、且有 journal 佐证时报故障——那正是「限了帧但内存照涨」的典型原因；只有
+文件时间戳可疑时降级成提醒，因为 mtime 分不出改的是哪一行。
+
+【六】顺带核对 shmem 大页策略：内核可能把 `transparent_hugepage=shmem:xxx` 这种写法
+整个丢掉（dmesg 里是 `transparent_hugepage= cannot parse, ignored`），命令行里写了
+不等于生效，所以它比对 sysfs 的实际值与命令行声明，不一致就报注意。
 
 退出码 0 表示没有阻塞性问题，1 表示有。
+
+要按进程归属查「是谁在占 shmem」用仓库里的 `niri-shm-attrib.sh`（只读采样，见该
+脚本头部说明）。
 
 还有一个通用的
 [`wayland-cast-doctor`](https://github.com/ljm-233/wayland-cast-doctor)，
