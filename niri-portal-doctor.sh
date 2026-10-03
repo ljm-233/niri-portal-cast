@@ -104,18 +104,109 @@ if [ -f "$npc" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-head_ "【四】帧率配置"
+head_ "【四】帧率配置是否生效"
+
+# 补丁是在 PipeWire::new() 里一次性把帧率抓走的（见 0002 补丁），而 PipeWire 在
+# niri 启动时构造。于是「写进 config.kdl」和「真正在推流」是两件事：只读配置文件
+# 会把没生效的值报成正常，`niri msg action load-config-file` 也改不动它。这里两个
+# 值都查，并明确说哪个算数。
+# 取 journal 里最近一次真实协商结果，返回「epoch 帧率」。帧率要匹配第一个
+# `framerate:` 片段：整行里还有 pixel_aspect_ratio 等别的 num:，贪心匹配会取错。
+last_negotiated_fps() {
+	have journalctl || return 0
+	local line ep rate
+	line=$(journalctl --user -u niri.service --since '-30min' --no-pager -o short-unix 2>/dev/null |
+		grep 'framerate: spa_fraction { num:' | tail -1)
+	[ -n "${line:-}" ] || return 0
+	ep=${line%% *}
+	rate=$(printf '%s' "$line" | grep -oE 'framerate: spa_fraction \{ num: [0-9]+' |
+		head -1 | grep -oE '[0-9]+$')
+	printf '%s %s\n' "${ep%%.*}" "${rate:-0}"
+}
+
+# 合成器的启动时刻，用来判断配置是不是启动之后才改的。
+compositor_start() {
+	if have systemctl; then
+		local ts
+		# LC_ALL=C: systemd 按当前 locale 格式化这个时间戳，中文 locale 下会
+		# 变成「六 2026-10-03 ...」，date -d 解析不了。
+		ts=$(LC_ALL=C systemctl --user show niri.service -p ActiveEnterTimestamp --value 2>/dev/null)
+		if [ -n "${ts:-}" ] && [ "$ts" != "n/a" ]; then
+			LC_ALL=C date -d "$ts" +%s 2>/dev/null && return 0
+		fi
+	fi
+	if have pgrep; then
+		local p
+		p=$(pgrep -x niri 2>/dev/null | head -1)
+		if [ -n "${p:-}" ]; then
+			stat -c %Y "/proc/$p" 2>/dev/null && return 0
+		fi
+	fi
+	return 0
+}
 
 cfg="$confdir/niri/config.kdl"
+# 补丁把范围钳在 30-120（niri-config/src/screencasting.rs 的 FRAME_RATE_MIN/MAX），
+# 超出的值被静默改成边界值。这里必须用补丁的真实边界：写 1-240 会让
+# `frame-rate-hz 10` 这种「其实跑在 30」的配置被报成正常。
+rate_min=30
+rate_max=120
+cfg_rate=""
 if [ -r "$cfg" ] && grep -qE '^[[:space:]]*frame-rate-hz' "$cfg"; then
-	rate=$(grep -oE 'frame-rate-hz[[:space:]]+[0-9]+' "$cfg" | head -1 | grep -oE '[0-9]+')
-	ok "帧率设为 ${rate:-?} Hz"
-	if [ -n "${rate:-}" ] && { [ "$rate" -lt 1 ] || [ "$rate" -gt 240 ]; }; then
-		warn "帧率 $rate 超出 1-240，niri 会静默钳位"
+	cfg_rate=$(grep -oE 'frame-rate-hz[[:space:]]+[0-9]+' "$cfg" | head -1 | grep -oE '[0-9]+')
+fi
+
+live_line=$(last_negotiated_fps)
+live_epoch=${live_line%% *}
+live_rate=${live_line##* }
+# 没有记录时两者都是空串；只有一个字段说明解析异常，宁可不用。
+if [ "$live_line" = "$live_epoch" ]; then live_rate=""; fi
+
+if [ -n "${cfg_rate:-}" ]; then
+	cfg_mtime=$(stat -c %Y "$cfg" 2>/dev/null)
+	start_at=$(compositor_start)
+
+	# 配置里超出范围的值会被钳到边界，所以「真正该跑多少」是钳位后的值。
+	cfg_effective=$cfg_rate
+	if [ "$cfg_rate" -lt "$rate_min" ]; then cfg_effective=$rate_min; fi
+	if [ "$cfg_rate" -gt "$rate_max" ]; then cfg_effective=$rate_max; fi
+	if [ "$cfg_effective" != "$cfg_rate" ]; then
+		warn "帧率 ${cfg_rate} 超出补丁的 ${rate_min}-${rate_max}，会被静默钳到 ${cfg_effective}"
+	fi
+
+	# journal 里那条记录可能早于本次合成器启动（上一轮测试留下的），那它就不
+	# 代表现在的值，不能拿它下结论。
+	if [ -n "${live_rate:-}" ] && [ -n "${start_at:-}" ] && [ "${live_epoch:-0}" -lt "$start_at" ]; then
+		info "journal 里最近一次协商 ${live_rate} Hz 早于本次合成器启动，不作为现行值"
+		live_rate=""
+	fi
+
+	if [ -n "${live_rate:-}" ]; then
+		if [ "$live_rate" = "$cfg_effective" ]; then
+			ok "帧率 ${cfg_effective} Hz 已生效（最近一次实际协商也是 ${live_rate} Hz）"
+		else
+			# 有启动时刻做交叉验证时才敢断言没生效；否则只提醒。
+			if [ -n "${start_at:-}" ]; then
+				bad "最近一次实际协商到的是 ${live_rate} Hz，不是配置的 ${cfg_effective}"
+			else
+				warn "最近一次实际协商到的是 ${live_rate} Hz，不是配置的 ${cfg_effective}"
+			fi
+			printf '       journal 里这个值才是 PipeWire 真正拿到的帧率。帧率在 niri\n'
+			printf '       启动时抓一次就固定了，load-config-file 改不动它；要让新值\n'
+			printf '       生效得重启会话（niri msg action quit 之后重进）。\n'
+		fi
+	elif [ -n "${cfg_mtime:-}" ] && [ -n "${start_at:-}" ] && [ "$cfg_mtime" -gt "$start_at" ]; then
+		warn "配置写了 ${cfg_rate} Hz，但 config.kdl 是合成器启动之后改的"
+		printf '       帧率只在 niri 启动时读一次。这次改动如果碰过 frame-rate-hz，\n'
+		printf '       要重启会话才生效。\n'
+	elif [ -n "${start_at:-}" ]; then
+		ok "帧率配置 ${cfg_rate} Hz（合成器启动之后没改过）"
+	else
+		info "帧率配置 ${cfg_rate} Hz（拿不到合成器启动时刻，是否生效无法判断）"
 	fi
 elif [ -r "$cfg" ]; then
 	warn "$cfg 里没有 frame-rate-hz"
-	printf '       niri 会用内置默认值。要显式指定就加上：\n'
+	printf '       niri 用补丁的内置默认值（60）。要显式指定就加上：\n'
 	printf '           screencasting { frame-rate-hz 60 }\n'
 else
 	warn "找不到 niri 配置 $cfg"
@@ -151,26 +242,51 @@ if have journalctl; then
 		printf '       解法：只留一个音频输出，然后重新共享。\n'
 	else
 		ok "$rm_count 次请求，$stream_count 次成功出流"
-		# Which path the client picked tells us more than pass/fail: modifier
-		# 0 with flags 0x0 is the shm path this package advertises, anything
-		# else is a dmabuf with a hardware modifier.
-		fps=$(journalctl --user -u niri.service --since '-30min' --no-pager 2>/dev/null |
-			grep -oE 'framerate: spa_fraction \{ num: [0-9]+' | tail -1 | grep -oE '[0-9]+$')
-		if [ -n "$fps" ]; then
-			ok "最近一次协商到的帧率 ${fps} Hz"
+		# 帧率用【四】里已经取好并做过新鲜度判定的那个值：客户端走的哪条路
+		# （modifier 0 且 flags 0x0 是本包宣告的 shm 路，其余是带硬件
+		# modifier 的 dmabuf）报表里也有，但这里只报真正当数的帧率。
+		if [ -n "${live_rate:-}" ]; then
+			ok "最近一次协商到的帧率 ${live_rate} Hz"
 		fi
 	fi
 fi
 
 # ---------------------------------------------------------------------------
-head_ "【六】内存"
+head_ "【六】内存与 shmem 大页策略"
 
 if [ -r /proc/meminfo ]; then
 	shmem=$(awk '/^Shmem:/{printf "%.2f", $2/1048576}' /proc/meminfo)
-	ok "Shmem ${shmem} GiB"
+	shmem_hp=$(awk '/^ShmemHugePages:/{printf "%.2f", $2/1048576}' /proc/meminfo)
 	if awk "BEGIN{exit !($shmem > 4)}"; then
-		warn "Shmem 超过 4 GiB"
-		printf '       长时间共享会在这里分配缓冲区。如果一直涨不回落，就调低帧率。\n'
+		warn "Shmem ${shmem} GiB（其中大页 ${shmem_hp} GiB）"
+		printf '       长时间共享会在这里分配缓冲区。一直涨不回落就先调低帧率，\n'
+		printf '       并确认配置真的生效（见【四】），再判断是谁在占（见仓库里的\n'
+		printf '       niri-shm-attrib.sh，它按进程归属）。\n'
+	elif [ -n "${shmem:-}" ]; then
+		ok "Shmem ${shmem} GiB（其中大页 ${shmem_hp} GiB）"
+	fi
+fi
+
+# 命令行里写了不等于内核就认。有些内核对 transparent_hugepage=shmem:xxx 这种写法
+# 直接 "cannot parse, ignored"，只在 dmesg 里说一句，sysfs 里仍然是默认值。所以
+# 这里比对实际策略，而不是相信 /proc/cmdline。
+if [ -r /sys/kernel/mm/transparent_hugepage/shmem_enabled ]; then
+	shmem_thp=$(sed 's/.*\[\([a-z_]*\)\].*/\1/' /sys/kernel/mm/transparent_hugepage/shmem_enabled)
+	cmd_thp=$(tr ' ' '\n' < /proc/cmdline 2>/dev/null | grep -m1 '^transparent_hugepage=.*shmem' || true)
+	if [ -n "${cmd_thp:-}" ]; then
+		want_thp=${cmd_thp##*:}
+		if [ "$want_thp" = "$shmem_thp" ]; then
+			ok "shmem 大页策略 $shmem_thp（与内核命令行 $cmd_thp 一致）"
+		else
+			warn "内核命令行写着 $cmd_thp，实际策略是 $shmem_thp —— 这个参数被内核丢掉了"
+			printf '       被丢掉的参数不会报错，只在 dmesg 里有一行\n'
+			printf '       "transparent_hugepage= cannot parse, ignored"。\n'
+			printf '       要真的改掉，开机后写 sysfs，例如：\n'
+			printf '       w /sys/kernel/mm/transparent_hugepage/shmem_enabled - - - - never\n'
+			printf '       （放 /etc/tmpfiles.d/thp-shmem.conf，systemd-tmpfiles --create 即可）\n'
+		fi
+	else
+		info "shmem 大页策略 $shmem_thp（内核命令行没有设置，用的是默认值）"
 	fi
 fi
 
