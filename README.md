@@ -175,5 +175,12 @@ git format-patch -1 --stdout > 新的patch文件
 - 上游 PR #1791「Support shm sharing」已合并，但上游版本仍不宣告 `AvailableSourceTypes` / `AvailableCursorModes`，帧率也仍是 `0/1`。
 - 包 `provides`/`conflicts` 声明为 `niri` 以替换官方包；`options=(!debug !lto)`。
 
+## 客户端侧泄漏的完整定位
+
+`docs/qq-share-leak.md` 是一份可以直接贴到上游 issue 的说明：现象、可复现的定位方法、
+1:1 的数据、四个档位的实测增速、已排除项（niri / portal / PipeWire / THP 那个假参数），
+以及给客户端侧的三条排查方向。它同时也解释了为什么「只看 `smaps` 会得出没人在占内存」的错误结论
+—— i915 的 GEM 是 shmem 记账但不进任何进程的 smaps。
+
 ## 许可证
 GPL-3.0-or-later，与 niri 本身一致。
