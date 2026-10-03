@@ -79,7 +79,12 @@ CSV 里判泄漏看 `*_res`（常驻共享页，来自 `smaps_rollup` 的 `Pss_S
 
 **刹车**针对「人工来不及反应」。触发时按固定顺序做三件事：① 把当时的完整进程表（alloc / res / fd / GEM）写进 dump 文件并把 CSV `sync` 落盘（真冻了也能事后复盘）；② `pw-cli destroy` 掉 `Stream/Output/Video` 节点（等价于对面把共享关掉，**不动客户端进程**）；③ 3 秒后若还在涨，才杀 `qq` 进程（`--no-kill` 可关掉这一步）。只有**真的存在采集流**时才动手（没有流时 Shmem 高是别人的账，掐流没意义、杀客户端更是误伤），且上限必须高于当前占用，否则拒绝启动。退出码 2 = 触发过刹车，64 = 上限低于当前占用、没启动。
 
-包内带一个 **systemd 用户服务（默认不开）** `/usr/lib/systemd/user/niri-shm-attrib.service`，默认 `--guard 6`（健康共享在 1~2 GiB，超过 6 就是在堆积，再往上就是冻机区）：
+它**随会话自动启动**：包里带了 `/usr/lib/systemd/user/default.target.wants/niri-shm-attrib.service`
+软链，systemd 会自己解析，不需要你跑 `enable`（`.install` 脚本里跑 `systemctl --user` 不可靠 ——
+那个上下文没有用户总线）。
+
+- 关掉它：`systemctl --user disable --now niri-shm-attrib`
+- 只改阈值：`systemctl --user edit niri-shm-attrib`，改 `ExecStart` 里的 `--guard`（默认 6 GiB）
 
 ```
 systemctl --user enable --now niri-shm-attrib     # 重启 niri、重新登录都自动带上
