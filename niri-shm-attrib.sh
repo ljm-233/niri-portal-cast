@@ -16,7 +16,7 @@
 #
 # 读 CSV 时看这两类列（按进程归属，单位 GiB）：
 #   *_res     它映射到的常驻共享页（smaps_rollup 的 Pss_Shmem，多个映射者按份分摊）
-#   *_alloc   memfd / /dev/shm 在它 fd 表里的已声明字节 —— 谁握着 fd 谁就让这些页活着
+#   *_alloc   memfd / /dev/shm / dmabuf 在它 fd 表里的已声明字节 —— 谁握着 fd 谁就让这些页活着
 # 注意两个坑：
 #   1. alloc 可能远大于 res：memfd 可以被 ftruncate 成很大却一页都没碰过（例：Intel
 #      Vulkan 在 portal 里建的 6×1 GiB memfd，res=0，不占内存）。判泄漏要看 res。
@@ -77,8 +77,11 @@ snapshot() {
 		awk -F: '{ p=$1; sub(/^\/proc\//,"",p); sub(/\/smaps_rollup$/,"",p);
 			kb=$3+0; if (kb > 0) print p, kb }')
 
+	# memfd / /dev/shm / dmabuf 三类 fd：dmabuf 是关键的一类，它能让 GPU 侧的
+	# GEM 对象一直活着（niri 空闲时就握着 54 个 dmabuf fd / 749 MiB），而且它
+	# 不出现 niri 的 memfd 计数里 —— 漏掉整类就等于漏掉泄漏本身。
 	list=$(find /proc/[0-9]*/fd -maxdepth 1 -type l \
-		\( -lname '*memfd:*' -o -lname '/dev/shm/*' \) 2>/dev/null)
+		\( -lname '*memfd:*' -o -lname '/dev/shm/*' -o -lname '/dmabuf:*' \) 2>/dev/null)
 	if [ -n "$list" ]; then
 		while read -r size fdpath; do
 			tmp=${fdpath#/proc/}
