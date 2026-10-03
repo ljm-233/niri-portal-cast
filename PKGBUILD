@@ -28,7 +28,7 @@ pkgname=niri-portal-cast
 # correct, because a semantic version like 26.0.7 would sort below the
 # previous 26.04.165.g61dc3de4 and every install would need --allow-downgrade.
 pkgver=2026.10.3
-pkgrel=13
+pkgrel=14
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
 arch=(x86_64)
 url="https://github.com/ljm-233/niri-portal-cast"
@@ -110,4 +110,9 @@ package() {
 	# niri 一重启就没了，所以这里同时装一个 systemd 用户服务（默认不开，见 README）。
 	install -Dm755 "$startdir/niri-shm-attrib.sh" "$pkgdir"/usr/bin/niri-shm-attrib
 	install -Dm644 "$startdir/niri-shm-attrib.service" "$pkgdir"/usr/lib/systemd/user/niri-shm-attrib.service
+	# 默认就随会话启动：包里放 default.target.wants 软链即可，不需要用户跑 enable
+	# （.install 脚本里跑 systemctl --user 不可靠——那个上下文没有用户总线）。
+	install -d "$pkgdir"/usr/lib/systemd/user/default.target.wants
+	ln -s ../niri-shm-attrib.service \
+		"$pkgdir"/usr/lib/systemd/user/default.target.wants/niri-shm-attrib.service
 }
