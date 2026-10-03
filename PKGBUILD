@@ -28,7 +28,7 @@ pkgname=niri-portal-cast
 # correct, because a semantic version like 26.0.7 would sort below the
 # previous 26.04.165.g61dc3de4 and every install would need --allow-downgrade.
 pkgver=2026.10.3
-pkgrel=12
+pkgrel=13
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
 arch=(x86_64)
 url="https://github.com/ljm-233/niri-portal-cast"
@@ -106,4 +106,8 @@ package() {
 	# 改共享档位的小工具：只动 config.kdl 的 screencasting 段，临时文件+校验+原子替换，
 	# 写完还会回查 journal，运行中的 niri 不接受就自动回滚。
 	install -Dm755 "$startdir/niri-portal-cast-tune.sh" "$pkgdir"/usr/bin/niri-portal-cast-tune
+	# 安全网：共享时内存一路涨就自动掐流，免得整机冻死。注意它是跟着会话走的，
+	# niri 一重启就没了，所以这里同时装一个 systemd 用户服务（默认不开，见 README）。
+	install -Dm755 "$startdir/niri-shm-attrib.sh" "$pkgdir"/usr/bin/niri-shm-attrib
+	install -Dm644 "$startdir/niri-shm-attrib.service" "$pkgdir"/usr/lib/systemd/user/niri-shm-attrib.service
 }

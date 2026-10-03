@@ -141,7 +141,17 @@ screencasting {
 16:21:14  Shmem 1.21 GiB  流 none     （2 秒退干净，进程没死，没冻机）
 ```
 
-注意：**它跟着会话走**。niri 一重启，挂在会话里的它会被一起杀掉（SIGTERM），所以重启后要重新挂，或者做成 systemd 用户服务常驻。
+本包同时装了它和一个 systemd 用户服务（**默认不开**）：`/usr/bin/niri-shm-attrib` 与
+`/usr/lib/systemd/user/niri-shm-attrib.service`。想让它常驻（重启 niri、重新登录都自动带上）：
+
+```
+systemctl --user enable --now niri-shm-attrib
+```
+
+默认阈值 6 GiB（正常共享 1~2 GiB，超过 6 就是在堆积、再往上就是冻机区）；要更早刹车：
+`systemctl --user edit niri-shm-attrib` 改 `ExecStart` 里的 `--guard`。不想让它自动掐流就
+`systemctl --user disable --now niri-shm-attrib`，改成需要时手动跑。**它跟着会话走**：
+不开这个服务的话，niri 一重启，手动挂的那份就会被一起杀掉（SIGTERM）。
 
 ### 挑档位不用试错：实测「尺寸 → 客户端可编码帧率」
 

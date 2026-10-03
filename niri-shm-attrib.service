@@ -1,0 +1,18 @@
+[Unit]
+Description=niri screencast shmem brake (niri-shm-attrib)
+Documentation=https://github.com/ljm-233/niri-portal-cast
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# 采样 0.5 秒一次；Shmem 超过 --guard 且**确实有采集流**时，自动 destroy 掉采集流
+# （等价于对面关掉共享）。默认 6 GiB：正常共享在 1~2 GiB，超过 6 说明已经在堆积，
+# 再往上就是冻机区。要更早刹车就把它改小，或按 README 手动跑并给出相对阈值。
+ExecStart=/usr/bin/niri-shm-attrib 0.5 0 --guard 6 --dump %t/niri-shm-dump.txt
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=default.target
