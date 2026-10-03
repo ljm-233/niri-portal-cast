@@ -184,16 +184,14 @@ if [ -n "${cfg_rate:-}" ]; then
 	if [ -n "${live_rate:-}" ]; then
 		if [ "$live_rate" = "$cfg_effective" ]; then
 			ok "帧率 ${cfg_effective} Hz 已生效（最近一次实际协商也是 ${live_rate} Hz）"
+		elif [ -n "${cfg_mtime:-}" ] && [ -n "${live_epoch:-}" ] && [ "$cfg_mtime" -gt "$live_epoch" ]; then
+			# 限制值是每次开始共享时读的，所以「配置比上次共享新」= 下次共享生效，不是故障。
+			info "配置 ${cfg_effective} Hz 比最近一次共享新，下次共享生效（上次是 ${live_rate} Hz）"
 		else
-			# 有启动时刻做交叉验证时才敢断言没生效；否则只提醒。
-			if [ -n "${start_at:-}" ]; then
-				bad "最近一次实际协商到的是 ${live_rate} Hz，不是配置的 ${cfg_effective}"
-			else
-				warn "最近一次实际协商到的是 ${live_rate} Hz，不是配置的 ${cfg_effective}"
-			fi
-			printf '       journal 里这个值才是 PipeWire 真正拿到的帧率。帧率在 niri\n'
-			printf '       启动时抓一次就固定了，load-config-file 改不动它；要让新值\n'
-			printf '       生效得重启会话（niri msg action quit 之后重进）。\n'
+			bad "最近一次实际协商到的是 ${live_rate} Hz，不是配置的 ${cfg_effective}"
+			printf '       限制值是每次开始共享时读的，正常情况下重开一次共享就会跟上。\n'
+			printf '       一直对不上说明这个补丁没在生效：确认二进制来自 niri-portal-cast\n'
+			printf '       （见【二】），并看 journal 里的 framerate 是不是真的没变。\n'
 		fi
 	elif [ -n "${cfg_mtime:-}" ] && [ -n "${start_at:-}" ] && [ "$cfg_mtime" -gt "$start_at" ]; then
 		warn "配置写了 ${cfg_rate} Hz，但 config.kdl 是合成器启动之后改的"

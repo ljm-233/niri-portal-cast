@@ -1,7 +1,7 @@
 pkgbase = niri-portal-cast
 	pkgdesc = Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients
 	pkgver = 2026.10.3
-	pkgrel = 11
+	pkgrel = 12
 	url = https://github.com/ljm-233/niri-portal-cast
 	arch = x86_64
 	license = GPL-3.0-or-later
