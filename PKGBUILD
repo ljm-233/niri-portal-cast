@@ -28,7 +28,7 @@ pkgname=niri-portal-cast
 # correct, because a semantic version like 26.0.7 would sort below the
 # previous 26.04.165.g61dc3de4 and every install would need --allow-downgrade.
 pkgver=2026.10.3
-pkgrel=8
+pkgrel=9
 pkgdesc="Scrollable-tiling Wayland compositor patched so portal screen capture works with Electron clients"
 arch=(x86_64)
 url="https://github.com/ljm-233/niri-portal-cast"
@@ -62,7 +62,7 @@ source=("git+https://github.com/niri-wm/niri.git#commit=$_upstream"
 	"${_patchfiles[@]}")
 b2sums=('SKIP'
 	'11c822ffd4dc3053e7ca638693e036d18751784df5a14a3955229237bb2f2a8ce9124f035cd8c1d7c908e5d26d189a289ec3fea7e2054b2a1b6a0b265ef3d6fd'
-	'ed92df5545848ae0e11e03e31f5c3fb46d1b1641975c14464630440cbc8db23d289b87739277d4718cbfbd2f21c91efb673010aaeedda1fae87540a2dc6933ae'
+	'a05e160aed5e01b508ed39b8799b00fe4b869775ce9276c7e2065c445a535382ad8452fa9ddb0ff8005efb217c08d13af5fcbaa7bba0e6d3c3dcee94c99df155'
 	'2ea209aec395a9d1f62e0ee9cd48ac7330f73eaa752f249cf734515c27e8be20958e31feb6849be0e6ec6325238f52e5c5a3b5f3dd3d0d86fd1ec64676a51f94')
 
 prepare() {
