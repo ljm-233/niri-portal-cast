@@ -1,80 +1,72 @@
-# QQ 屏幕共享内存暴涨的定位（可直接贴上游）
+# QQ 屏幕共享内存暴涨：结论与验证
 
-环境：Arch Linux + **niri**（自编译，`niri-portal-cast` 补丁）+ `linuxqq-wayland-fix` 0.2.8-1 + QQ 3.2.34-53644，
-整屏 2560×1600（eDP-1），客户端走 portal 采集。
+环境：Arch + niri（`niri-portal-cast` 补丁）+ `linuxqq-wayland-fix` 0.2.8-1 + QQ 3.2.34-53644，整屏 2560×1600。
 
-## 现象
+## 结论
 
-一开屏幕共享，`/proc/meminfo` 的 `Shmem` 就一路涨，几十秒到十几 GiB，整机卡死。共享一停立刻回落。
+1. **不是 `linuxqq-wayland-fix`。** 通读 `src/qq-wl-portal.c`（v0.2.9，859 行）：全库不碰 GPU/DRM/EGL/dma-buf
+   （`egl|gl*|gbm|drm|memfd_create|mmap|dma_buf|wl_shm|va_` 检索为空）。每帧路径 `wrap_dequeue`（`:590-642`）
+   只做一次 CPU `memcpy` 到复用缓冲（`:628`），**每帧零分配**。三处分配都有对应 free：`calloc` 56 B/流
+   （`:554` → `:586` free）、`malloc` 16 B/次 pulse 查询（`:827`/`:850` → `:798`/`:813` free）、
+   `realloc` 仅在 `packed_size < need` 时发生（`:614`，条件 `:613`，`need = row*height`，`:605`/`:612`）。
+2. **那 16.4 MB 也不是它。** `:614` 那块尺寸恰好等于实测的每帧 16.4 MB，但它是 glibc 的大块 `malloc`
+   （匿名 mmap，记 `AnonPages`）—— **既不是 `Shmem`，也不是 i915 GEM**，而且只分配一次、之后复用、
+   流销毁时 free。
+3. **是 QQ 自带的 `avsdk/broadcast-core.so` 的 GL PBO 路径。** 上游自己在 `:475-483` 的注释里记了它的写法：
+   `memcpy(pbo, datas[0].data, width*height*4)`（pbo = GL pixel buffer object）。该二进制导入 65 个 `gl*`
+   符号：`glGenBuffers`/`glBufferData`/`glMapBuffer`/`glUnmapBuffer`/`glDeleteBuffers`、
+   `glGenTextures`/`glTexImage2D`/`glTexSubImage2D`/`glDeleteTextures`/`glReadPixels`，以及
+   `eglCreateImageKHR`/`eglDestroyImageKHR`/`glEGLImageTargetTexture2DOES`。
+4. **逐条对上实测**：GL buffer/texture 就是 i915 GEM，且以 **GL name** 引用而不是 fd —— 所以
+   `/proc/PID/fd` 里 `/dmabuf:` 恒为 0、`smaps` 里看不到，只有 `/proc/PID/fdinfo/*` 的 `drm-total-system0` 在涨；
+   2560×1600 RGBA = 16,384,000 B = 每帧 16.4 MB；每秒 24 帧不释放 = 398 MB/s。
 
-## 定位方法（都可复现）
+## 一条命令验证
 
-- **按进程归属**：读每个进程 `/proc/PID/smaps_rollup` 的 `Pss_Shmem`（注意 `smaps_rollup` 里**没有** `Shmem:` 字段）、
-  `/proc/PID/fd` 里 `memfd:`/`/dev/shm/`/`/dmabuf:` 的 fd 与大小、以及 `/proc/PID/fdinfo/*` 里 i915 的
-  `drm-total-system0`（GEM）。
-- 关键前提：**i915 的 GEM 是 shmem 记账的，但不进任何进程的 smaps**。在本机上 `Shmem` 总量 1484 MiB，
-  而所有进程 `Pss_Shmem` 之和只有 268 MiB —— 差额就是 GPU 侧对象。只看 smaps 会得出「没有人在占」的错误结论。
+`docs/glprobe.c`（本仓库内，`LD_PRELOAD` 计数 GL 调用，每行输出 `[glprobe] <微秒> <函数> <字节>`）：
 
-## 数据
+```bash
+gcc -shared -fPIC -o /tmp/glprobe.so docs/glprobe.c -ldl   # 需要 gcc 与 libdl
 
-整屏共享，`Shmem` 与某**单个** QQ 子进程的 GEM 一比一同步增长：
+# 完全退出 QQ 后，用它启动：
+LD_PRELOAD=/tmp/glprobe.so linuxqq-wayland-fix 2>/tmp/gl.log
 
-| 时刻 | Shmem | QQ 的 GEM |
+# 开一次共享，跑 20 秒左右，然后：
+grep -c glGenBuffers   /tmp/gl.log
+grep -c glDeleteBuffers /tmp/gl.log
+awk '/glBufferData/{s+=$NF} END{print s/1048576" MB"}' /tmp/gl.log
+```
+
+**判据**：`glBufferData` 累计 ≈ 20 s × 398 MB/s ≈ **8 GB**，而 `glDeleteBuffers` 远少于 `glGenBuffers`
+→ 直接指到 broadcast-core 的 PBO 路径。
+
+## 实测数据
+
+| 档位（采集尺寸 / 帧率） | 每帧 | 客户端 `qq --type=ppapi` 的 GEM 增速 |
 |---|---|---|
-| +0 s | 1.234 GiB | 0.051 GiB |
-| +3 s | 1.984 GiB | 0.875 GiB |
-| +6 s | 2.996 GiB | 1.967 GiB |
-| +9 s | **4.654 GiB** | **3.575 GiB** |
+| 2560×1600 / 30 | 16.4 MB | **398 MB/s**（≈ 每秒 24 帧被留住） |
+| 1820×1138 / 30 | 8.3 MB | 135 MB/s |
+| 1214×758 / 30 | 3.7 MB | 29 MB/s |
+| 960×600 / 15 | 2.3 MB | **25 MB/s**（与帧大小基本无关的地板） |
 
-同期 niri 完全不动：GEM 平在 0.59 GiB、fd 数平在 124、memfd 声明量平在 1.077 GiB；
-portal 也不动，它那 6 个 1 GiB 的 Vulkan memfd 常驻始终为 0。
-`pw-cli destroy` 掉采集流节点后 3 秒内 Shmem 从 4.65 回落到 1.20 GiB，**进程没有退出**。
+- `Shmem`（`/proc/meminfo`）与该进程的 GEM **一比一同步增长**：9 秒 1.234 → 4.654 GiB（GEM 0.051 → 3.575 GiB）
+- 同期 niri 与 portal **完全不动**（GEM、fd 数、memfd 声明量全平），也没有出现一次
+  `no available buffer in pw stream`
+- 掐掉采集流后 3 秒内回落（4.65 → 1.20 GiB），**进程没有退出**
 
-跑这个的进程是：**`qq --type=ppapi`**（收帧+编码的那个），它加载了 `libqq-wl-portal/clipbridge/screenshot/borderfix`。
-取它的 DRM client：
+## 一个会把人带偏的坑
 
-```
-$ grep -H drm-client-id /proc/$(pgrep -f 'type=ppapi'|head -1)/fdinfo/* | grep -v ':0$'
-/proc/1428382/fdinfo/42:drm-client-id:	234
-```
+i915 的 GEM 是 shmem 记账的，但**不进任何进程的 `smaps`**：本机 `Shmem` 总量 1484 MiB，
+而所有进程 `Pss_Shmem` 之和只有 268 MiB。只看 `smaps` 会得出「没有人在占内存」的错误结论。
 
-## 与帧尺寸/帧率的关系（同机实测）
+## 不确定项
 
-| 采集尺寸 | 帧率 | 每帧 | 客户端 GEM 增速 |
-|---|---|---|---|
-| 2560×1600 | 30 | 16.4 MB | **398 MB/s**（≈ 每秒 24 帧被留住） |
-| 1820×1138 | 30 | 8.3 MB | 135 MB/s |
-| 1214×758 | 30 | 3.7 MB | 29 MB/s |
-| 960×600 | 15 | 2.3 MB | **25 MB/s** |
+- 静态上**无法证明**「每帧 `glGenBuffers` 而从不 `glDeleteBuffers`」：该二进制里 `glDeleteBuffers`
+  有 9 处引用、`glGenBuffers` 有 7 处，从引用数判断不了 —— 所以上面那个实验是必须跑的。
+- 「GNOME 走 dmabuf 所以不复现」是**未经实验证实的推测**，我们没有做过 GNOME / dmabuf 的对照。
 
-把帧缩小 7 倍、帧率砍半，增速只从 398 降到 25 —— 说明除了按帧的部分，还有一个**与画面大小基本无关的
-固定驻留速率（约 25 MB/s）**。
+## 下一步
 
-## 已排除
-
-- **不是 niri**：整段过程里 niri 的 GEM / fd / memfd 声明量全平；也没有一次
-  `no available buffer in pw stream`（说明客户端并没有占着 niri 的 PipeWire 缓冲，而是自己拷一份留下）
-- **不是 portal / PipeWire**：`xdg-desktop-portal-gnome` 的 GEM 平（0.034 GiB），它持有的 memfd 常驻为 0
-- **不是内核参数**：`transparent_hugepage=shmem:never` 在这台内核上是无效写法
-  （`huge_memory: transparent_hugepage= cannot parse, ignored`），实际策略一直是默认的 `advise`，
-  所以「THP 已关」这个前提不成立（但它也不是主因）
-
-## 内存对象长什么样（卡在这里）
-
-- 客户端 `/proc/PID/fd` 里 **`/dmabuf:` 数量恒为 0**，而 GEM 涨到 1 GiB —— 说明它用的是 **GEM handle**
-  （`DRM_IOCTL_GEM_CREATE` 的句柄，不开 fd），这也解释了为什么 fd 表、`smaps`、`fincore` 全都看不到
-- `/sys/kernel/debug/dri/1/i915_gem_objects` 只给全系统汇总：`1620 shrinkable objects, 1434402816 bytes`
-  （平均 ≈ 885 KB/个，混合尺寸），**没有按客户端拆分**
-- `/sys/kernel/debug/dri/1/clients` 是**文件不是目录**，所以拿不到 per-client 的对象清单
-
-## 建议的排查方向（客户端侧）
-
-1. 在 **niri（纯 shm 路径）** 下复现：维护者在 GNOME 上测不出来，很可能因为 GNOME 走 dmabuf；
-   Electron 客户端不认 DMA-BUF，niri 只能宣告 shm —— **这条 shm 路径可能就是必要条件**
-2. 盯 `--type=ppapi` 进程里每帧的处理链路：收到 PipeWire 帧之后是否每次都 `GEM_CREATE` / 建 EGLImage /
-   建纹理而**从不释放**（24 帧/秒 × 16 MB 正好对上 398 MB/s）
-3. 若无法复现，可用上面那组命令采一份 niri 环境下的数据对比
-
----
-
-采集工具（本机自用，含自动刹车，防冻机）：`niri-shm-attrib`（`niri-portal-cast` 包内）
+查 `broadcast-core.so` 里 PBO 与纹理的生命周期：每帧是否 `glGenBuffers` / `glTexImage2D` /
+`eglCreateImageKHR`，而对应的 `glDeleteBuffers` / `glDeleteTextures` / `eglDestroyImageKHR` 从未调用
+（或只在尺寸变化时调用一次）。
