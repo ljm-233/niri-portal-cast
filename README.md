@@ -315,6 +315,26 @@ niri-portal-cast-tune size 1920x1080   # 只改分辨率（off = 不限制）
 
 限制值是**每次开始共享时读**的，所以改完重开一次共享就生效，不用重启 niri。
 
+## 和客户端侧修复的分工
+
+桌面共享这条链路是两半，缺一不可：
+
+| 层 | 谁负责 | 内容 |
+|---|---|---|
+| 合成器 | **本包** | 宣告 shm 格式与 `AvailableSourceTypes`/`AvailableCursorModes`（Electron 不认 DMA-BUF，只有 shm 这条路）、限帧率、限采集分辨率 |
+| 客户端 | [linuxqq-wayland-fix](https://github.com/SHORiN-KiWATA/linuxqq-wayland-fix) | 让 QQ 走 portal 选源、收帧、行跨度、剪贴板、截图 |
+| portal / PipeWire | 系统 | 协商格式与缓冲 |
+
+本包保证「niri 愿意把画面交出去、并且速率可控」；**QQ 拿到画面之后怎么收，不在本包范围内**。
+2026-10-03 实测：共享期间上涨的内存是 **QQ 自己的 `--type=ppapi` 进程**持有的 i915 GEM
+（30fps 下每秒约 24 帧被留住，与 `/proc/meminfo` 的 Shmem 1:1 同步），niri 侧全程不动。
+
+所以内存异常时的处理顺序是：
+
+1. `niri-portal-cast-tune 1080p`（或 `fps 30`）—— 把每帧字节或速率压到客户端吃得下；
+2. 还涨就跑 `niri-portal-cast-tune safe`，再用仓库里的 `niri-shm-attrib.sh` 确认是哪个进程在涨；
+3. 若确认是客户端侧（`qq` / `--type=ppapi`），那属于客户端，本包只能减缓、不能根治。
+
 ## 许可证
 
 GPL-3.0-or-later，与 niri 本身一致。
