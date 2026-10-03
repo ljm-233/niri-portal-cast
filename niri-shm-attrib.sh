@@ -12,6 +12,7 @@
 # 用法：
 #   ./niri-shm-attrib.sh                              # 2 秒一次，不设刹车
 #   ./niri-shm-attrib.sh 0.5 300 --guard 3            # 0.5 秒一次，超 3 GiB 自动刹车
+#   ./niri-shm-attrib.sh 0.5 0 --guard-relative 2     # 阈值 = 当前基线 + 2 GiB（服务用这个）
 #   ./niri-shm-attrib.sh 0.5 300 --guard 3 > ~/coding/shm-attrib.csv
 #
 # 读 CSV 时看这两类列（按进程归属，单位 GiB）：
@@ -29,18 +30,25 @@ set -uo pipefail
 interval=2
 duration=0
 guard=""
+guard_rel=""
 do_kill=1
 dumpfile=""
 args=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--guard) guard="${2:-}"; shift 2 ;;
+		--guard-relative) guard_rel="${2:-}"; shift 2 ;;
 		--no-kill) do_kill=0; shift ;;
 		--dump) dumpfile="${2:-}"; shift 2 ;;
 		-h|--help) sed -n '2,40p' "$0"; exit 0 ;;
 		*) args+=("$1"); shift ;;
 	esac
 done
+# --guard-relative N = 当前 Shmem + N，免得基线一变服务就拒绝启动
+if [ -n "$guard_rel" ]; then
+	guard=$(awk -v b="$(meminfo_val Shmem:)" -v r="$guard_rel" 'BEGIN{printf "%.1f", b + r}')
+fi
+
 interval="${args[0]:-$interval}"
 duration="${args[1]:-$duration}"
 [ -n "$dumpfile" ] || dumpfile="${TMPDIR:-/tmp}/niri-shm-dump-$(date +%s).txt"
