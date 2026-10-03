@@ -44,11 +44,6 @@ while [ $# -gt 0 ]; do
 		*) args+=("$1"); shift ;;
 	esac
 done
-# --guard-relative N = 当前 Shmem + N，免得基线一变服务就拒绝启动
-if [ -n "$guard_rel" ]; then
-	guard=$(awk -v b="$(meminfo_val Shmem:)" -v r="$guard_rel" 'BEGIN{printf "%.1f", b + r}')
-fi
-
 interval="${args[0]:-$interval}"
 duration="${args[1]:-$duration}"
 [ -n "$dumpfile" ] || dumpfile="${TMPDIR:-/tmp}/niri-shm-dump-$(date +%s).txt"
@@ -207,6 +202,11 @@ guard_trip() {
 		fi
 	fi
 }
+
+# --guard-relative N = 当前 Shmem + N（在所有函数定义之后才算，否则 meminfo_val 还没定义）
+if [ -n "$guard_rel" ]; then
+	guard=$(awk -v b="$(meminfo_val Shmem:)" -v r="$guard_rel" 'BEGIN{printf "%.1f", b + r}')
+fi
 
 printf '# ts interval=%s duration=%s guard=%s\n' "$interval" "$duration" "${guard:-无}"
 printf '# epoch,shmem_gib,shmem_huge_gib,shmem_pmd_gib,devshm_mib,fd_total_gib,fd_total_count,drm_total_gib,niri_res_gib,niri_alloc_gib,niri_fds,niri_drm_gib,portal_res_gib,portal_alloc_gib,portal_fds,portal_drm_gib,client_res_gib,client_alloc_gib,client_fds,client_drm_gib,top_name,top_pid,top_res_gib,top_alloc_gib,top_fds,top_drm_gib,fps,streams\n'
