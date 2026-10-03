@@ -80,7 +80,23 @@ screencasting {
 }
 ```
 
-范围 30-120，默认 60。超出范围的值会被静默钳位到边界，不报错。
+范围 5-120，默认 60。超出范围的值会被静默钳位到边界，不报错。
+
+### 下限为什么是 5 而不是 30
+
+2026-10-03 用本仓库的 `niri-shm-attrib.sh` 实测（整屏 2560×1600，QQ 共享）：
+
+- 共享 8 秒内，QQ 的 `--type=ppapi` 进程持有的 i915 GEM 从 0.47 GiB 涨到 3.58 GiB，
+  同期 `/proc/meminfo` 的 Shmem 涨 3.42 GiB —— **一一对应**；
+- niri 侧完全不动：GEM 平在 0.59 GiB、fd 数平在 124、memfd 声明量平在 1.077 GiB；
+  portal 也平，它那 6 个 1 GiB 的 Vulkan memfd 常驻始终是 0；
+- 增长速率 398 MB/s ÷ 16.4 MB/帧 = **每秒 24.2 帧被留住**，而帧率上限是 30 fps，
+  即客户端只编码得动约 6 fps，其余全留在它自己的 GPU 缓冲里（流一停就放掉）。
+
+`niri` 在这几次里一次 `no available buffer in pw stream` 都没报，说明客户端并不是
+占着 niri 的 PipeWire 缓冲，而是每帧复制一份到自己那边。所以限帧率只能**按比例
+减慢**堆积：压不到客户端消费能力以下就等于没治。30 的下限让 `frame-rate-hz 10`
+根本写不进去，因此降到 5。
 
 不写这个块就用默认 60。
 
@@ -116,7 +132,7 @@ niri-portal-doctor
 ```
 
 它只读状态，不重启任何东西，通话中跑也安全。逐项检查会话环境、二进制是否带补丁、
-门户后端、帧率配置**是否真的生效**、niri 是否收到采集请求、Shmem 占用与 shmem 大页
+门户后端、帧率配置**是否真的生效**（范围 5-120）、niri 是否收到采集请求、Shmem 占用与 shmem 大页
 策略，以及音频图，并指出第一个断掉的地方。
 
 【四】不看「配置文件里写了什么」就报正常：它拿配置值和 journal 里最近一次实际协商
@@ -193,6 +209,11 @@ git clone https://github.com/ljm-233/niri-portal-cast.git
 cd niri-portal-cast
 makepkg -si
 ```
+
+重复构建要留神：补丁 0002 会**新建** `niri-config/src/screencasting.rs`，而 makepkg
+复用 `src/` 时 `git reset` 不会清掉这个未跟踪文件，于是第二次 `makepkg -f` 会报
+`The next patch would create the file ..., which already exists`。用 `makepkg -C`
+（cleanbuild）或先 `rm -rf src pkg` 就行。
 
 ## 跟随上游新版本
 

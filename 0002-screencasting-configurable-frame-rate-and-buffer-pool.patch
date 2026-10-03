@@ -4,14 +4,19 @@ Date: Fri, 2 Oct 2026 03:11:09 +0800
 Subject: [PATCH] screencasting: make the frame rate and SHM buffer bound
  configurable
 
-The 30 Hz rate and 32 buffer pool were the values that happened to stop
-Electron clients from exhausting memory, but they were compiled in. Expose
-them as a `screencasting { }` config block so a user can trade CPU for
-smoothness without rebuilding.
+The frame rate was compiled in at a value that happened to keep Electron
+clients from exhausting memory. Expose it as a `screencasting { }` config
+block so a user can trade smoothness for memory without rebuilding.
 
-Range is 30-120 Hz and 8-256 buffers; values outside that are clamped
-rather than rejected, so a typo cannot make the compositor advertise a
-rate that stalls the machine.
+The floor is 5 Hz, not 30. Measured on a 2560x1600 share with QQ: the client
+(its --type=ppapi process) retains roughly one 16 MiB frame per frame it
+receives and only encodes about 6 of them per second, so at a 30 Hz cap the
+backlog grows by ~24 frames/s (~390 MB/s) no matter what. A cap the client
+can actually keep up with has to be able to go below 30, and 5 leaves room
+under the slowest client measured so far.
+
+Values outside the range are clamped rather than rejected, so a typo cannot
+make the compositor advertise a rate that stalls the machine.
 ---
  docs/wiki/Configuration:-Miscellaneous.md |   5 +
  niri-config/src/lib.rs                    |   8 +
@@ -111,7 +116,7 @@ index 00000000..f7e7cc70
 +}
 +
 +impl Screencasting {
-+    pub const FRAME_RATE_MIN: u32 = 30;
++    pub const FRAME_RATE_MIN: u32 = 5;
 +    pub const FRAME_RATE_MAX: u32 = 120;
 +    pub const FRAME_RATE_DEFAULT: u32 = 60;
 +

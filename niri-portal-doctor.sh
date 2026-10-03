@@ -146,10 +146,10 @@ compositor_start() {
 }
 
 cfg="$confdir/niri/config.kdl"
-# 补丁把范围钳在 30-120（niri-config/src/screencasting.rs 的 FRAME_RATE_MIN/MAX），
-# 超出的值被静默改成边界值。这里必须用补丁的真实边界：写 1-240 会让
-# `frame-rate-hz 10` 这种「其实跑在 30」的配置被报成正常。
-rate_min=30
+# 补丁把范围钳在 5-120（niri-config/src/screencasting.rs 的 FRAME_RATE_MIN/MAX）。
+# 下限从 30 降到 5 是因为实测客户端（QQ 的 ppapi 进程）在整屏下只编码得动约
+# 6 fps，30 的上限永远高于它的消费能力，堆积就只能按比例减慢、停不下来。
+rate_min=5
 rate_max=120
 cfg_rate=""
 if [ -r "$cfg" ] && grep -qE '^[[:space:]]*frame-rate-hz' "$cfg"; then
