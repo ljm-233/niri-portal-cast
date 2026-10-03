@@ -1,0 +1,871 @@
+From c90b27935ee4d23b9a5ccca60dc90ac5382ccb2c Mon Sep 17 00:00:00 2001
+From: ljm-233 <2836583630@qq.com>
+Date: Sat, 3 Oct 2026 15:20:57 +0800
+Subject: [PATCH] screencasting: make the capture size cap configurable, and
+ actually scale the frame
+
+`cap_capture_size` was written to protect clients from a stream larger than
+they can consume, but it only ever lowered the *advertised* size. Everything
+else kept working on the output's size:
+
+- the damage tracker is created from the output size in
+  `dequeue_buffer_and_render`
+- `render_to_shmbuf` checked the buffer against the tracker's size
+
+So on any output above the built-in 2560x1600 bound (a 4K screen, say) the
+advertised format and the allocated buffers were scaled while the render
+check was not, and every frame failed with "invalid buffer size". The cap was
+effectively broken above the size it was written for, which happens to be
+this machine's screen, so it never showed up here.
+
+Two changes:
+
+1. `screencasting { max-pixels N }` replaces the hardcoded constant. The
+   default is the old 2560x1600, so nothing changes unless it is set. Set it
+   to 1024000 for 1280x800, 576000 for 960x600.
+
+2. The render now scales. Rendering itself stays at the output's size -- the
+   damage tracker, the element geometry and the cursor metadata are all in
+   output coordinates -- and when the capture is smaller the finished frame
+   is copied into a second texture with `Renderer::blit` (which takes a
+   filter and returns a sync point) before it is downloaded or handed to the
+   client's dmabuf. The download gets smaller as a side effect. Cursor
+   metadata is scaled to match.
+
+The limits are also read when a cast starts rather than in `PipeWire::new`,
+so changing them applies to the next share instead of the next session. That
+is what made the 30 Hz experiment earlier today inconclusive: the config had
+changed, the running compositor had not.
+---
+ niri-config/src/.appearance.rs.pending-snap |  51 ++++++++
+ niri-config/src/.input.rs.pending-snap      |  28 ++++
+ niri-config/src/.output.rs.pending-snap     |   2 +
+ niri-config/src/lib.rs                      |   1 +
+ niri-config/src/screencasting.rs            |  37 +++++-
+ src/niri.rs                                 |  27 +++-
+ src/render_helpers/mod.rs                   | 135 +++++++++++++++-----
+ src/screencasting/mod.rs                    |   8 +-
+ src/screencasting/pw_utils.rs               |  97 +++++++++-----
+ 9 files changed, 315 insertions(+), 71 deletions(-)
+ create mode 100644 niri-config/src/.appearance.rs.pending-snap
+ create mode 100644 niri-config/src/.input.rs.pending-snap
+ create mode 100644 niri-config/src/.output.rs.pending-snap
+
+diff --git a/niri-config/src/.appearance.rs.pending-snap b/niri-config/src/.appearance.rs.pending-snap
+new file mode 100644
+index 00000000..75a9f967
+--- /dev/null
++++ b/niri-config/src/.appearance.rs.pending-snap
+@@ -0,0 +1,51 @@
++{"run_id":"1791012081-879026980","line":1209,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1209,"expression":"is_on(\"off\", &[])"},"snapshot":"off"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"off"}}
++{"run_id":"1791012081-879026980","line":1261,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"rule_color_can_override_base_gradient","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1261,"expression":"(border.active_gradient.is_some(), border.inactive_gradient.is_some(),\nborder.urgent_gradient.is_some(),)"},"snapshot":"(\n    false,\n    false,\n    false,\n)"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"(\n    false,\n    false,\n    false,\n)"}}
++{"run_id":"1791012081-879026980","line":1331,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"rule_color_can_override_rule_gradient","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1331,"expression":"(border.active_gradient.is_some(), border.inactive_gradient.is_some(),\nborder.urgent_gradient.is_some(),\ntab_indicator_rule.active_gradient.is_some(),\ntab_indicator_rule.inactive_gradient.is_some(),\ntab_indicator_rule.urgent_gradient.is_some(),)"},"snapshot":"(\n    false,\n    false,\n    false,\n    false,\n    false,\n    false,\n)"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"(\n    false,\n    false,\n    false,\n    false,\n    false,\n    false,\n)"}}
++{"run_id":"1791012081-879026980","line":1210,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1210,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-2","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1210,"expression":"is_on(\"off\", &[\"off\"])"},"snapshot":"off"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"off"}}
++{"run_id":"1791012081-879026980","line":1211,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1211,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-3","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1211,"expression":"is_on(\"off\", &[\"on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1212,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1212,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-4","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1212,"expression":"is_on(\"off\", &[\"off,on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1214,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1214,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-5","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1214,"expression":"is_on(\"on\", &[])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1215,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1215,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-6","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1215,"expression":"is_on(\"on\", &[\"off\"])"},"snapshot":"off"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"off"}}
++{"run_id":"1791012081-879026980","line":1216,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1216,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-7","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1216,"expression":"is_on(\"on\", &[\"on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1217,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1217,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-8","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1217,"expression":"is_on(\"on\", &[\"off,on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1219,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1219,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-9","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1219,"expression":"is_on(\"off\", &[\"off\", \"off\"])"},"snapshot":"off"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"off"}}
++{"run_id":"1791012081-879026980","line":1220,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1220,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-10","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1220,"expression":"is_on(\"off\", &[\"off\", \"on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1221,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1221,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-11","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1221,"expression":"is_on(\"off\", &[\"on\", \"off\"])"},"snapshot":"off"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"off"}}
++{"run_id":"1791012081-879026980","line":1222,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1222,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-12","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1222,"expression":"is_on(\"off\", &[\"on\", \"on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1224,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1224,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-13","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1224,"expression":"is_on(\"on\", &[\"off\", \"off\"])"},"snapshot":"off"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"off"}}
++{"run_id":"1791012081-879026980","line":1225,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1225,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-14","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1225,"expression":"is_on(\"on\", &[\"off\", \"on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012081-879026980","line":1226,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1226,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-15","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1226,"expression":"is_on(\"on\", &[\"on\", \"off\"])"},"snapshot":"off"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"off"}}
++{"run_id":"1791012081-879026980","line":1227,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":1227,"new":{"module_name":"niri_config__appearance__tests","snapshot_name":"border_rule_on_off_merging-16","metadata":{"source":"niri-config/src/appearance.rs","assertion_line":1227,"expression":"is_on(\"on\", &[\"on\", \"on\"])"},"snapshot":"on"},"old":{"module_name":"niri_config__appearance__tests","metadata":{},"snapshot":"on"}}
++{"run_id":"1791012106-236541290","line":1209,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1261,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1210,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1331,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1211,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1212,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1214,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1215,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1216,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1217,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1219,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1220,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1221,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1222,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1224,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1225,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1226,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":1227,"new":null,"old":null}
+diff --git a/niri-config/src/.input.rs.pending-snap b/niri-config/src/.input.rs.pending-snap
+new file mode 100644
+index 00000000..a87971bf
+--- /dev/null
++++ b/niri-config/src/.input.rs.pending-snap
+@@ -0,0 +1,28 @@
++{"run_id":"1791012081-879026980","line":720,"new":{"module_name":"niri_config__input__tests","snapshot_name":"scroll_factor_h_v_factors","metadata":{"source":"niri-config/src/input.rs","assertion_line":720,"expression":"sf.h_v_factors()"},"snapshot":"(\n    2.0,\n    2.0,\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"(\n    2.0,\n    2.0,\n)"}}
++{"run_id":"1791012081-879026980","line":635,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_partial","metadata":{"source":"niri-config/src/input.rs","assertion_line":635,"expression":"parsed.mouse.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        vertical: None,\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        vertical: None,\n    },\n)"}}
++{"run_id":"1791012081-879026980","line":677,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_mixed","metadata":{"source":"niri-config/src/input.rs","assertion_line":677,"expression":"parsed.mouse.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        horizontal: None,\n        vertical: Some(\n            FloatOrInt(\n                -1.0,\n            ),\n        ),\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        horizontal: None,\n        vertical: Some(\n            FloatOrInt(\n                -1.0,\n            ),\n        ),\n    },\n)"}}
++{"run_id":"1791012081-879026980","line":543,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_combined","metadata":{"source":"niri-config/src/input.rs","assertion_line":543,"expression":"parsed.mouse.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        horizontal: None,\n        vertical: None,\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        horizontal: None,\n        vertical: None,\n    },\n)"}}
++{"run_id":"1791012081-879026980","line":585,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_split","metadata":{"source":"niri-config/src/input.rs","assertion_line":585,"expression":"parsed.mouse.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        vertical: Some(\n            FloatOrInt(\n                -1.0,\n            ),\n        ),\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: Some(\n            FloatOrInt(\n                2.0,\n            ),\n        ),\n        vertical: Some(\n            FloatOrInt(\n                -1.0,\n            ),\n        ),\n    },\n)"}}
++{"run_id":"1791012081-879026980","line":732,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":648,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":732,"new":{"module_name":"niri_config__input__tests","snapshot_name":"scroll_factor_h_v_factors-2","metadata":{"source":"niri-config/src/input.rs","assertion_line":732,"expression":"sf.h_v_factors()"},"snapshot":"(\n    3.0,\n    -1.0,\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"(\n    3.0,\n    -1.0,\n)"}}
++{"run_id":"1791012081-879026980","line":694,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":556,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":744,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":648,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_partial-2","metadata":{"source":"niri-config/src/input.rs","assertion_line":648,"expression":"parsed.touchpad.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: None,\n        vertical: Some(\n            FloatOrInt(\n                -1.5,\n            ),\n        ),\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: None,\n        vertical: Some(\n            FloatOrInt(\n                -1.5,\n            ),\n        ),\n    },\n)"}}
++{"run_id":"1791012081-879026980","line":694,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_mixed-2","metadata":{"source":"niri-config/src/input.rs","assertion_line":694,"expression":"parsed.touchpad.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                1.5,\n            ),\n        ),\n        horizontal: Some(\n            FloatOrInt(\n                3.0,\n            ),\n        ),\n        vertical: None,\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                1.5,\n            ),\n        ),\n        horizontal: Some(\n            FloatOrInt(\n                3.0,\n            ),\n        ),\n        vertical: None,\n    },\n)"}}
++{"run_id":"1791012081-879026980","line":744,"new":{"module_name":"niri_config__input__tests","snapshot_name":"scroll_factor_h_v_factors-3","metadata":{"source":"niri-config/src/input.rs","assertion_line":744,"expression":"sf.h_v_factors()"},"snapshot":"(\n    1.0,\n    2.0,\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"(\n    1.0,\n    2.0,\n)"}}
++{"run_id":"1791012081-879026980","line":556,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_combined-2","metadata":{"source":"niri-config/src/input.rs","assertion_line":556,"expression":"parsed.touchpad.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                1.5,\n            ),\n        ),\n        horizontal: None,\n        vertical: None,\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: Some(\n            FloatOrInt(\n                1.5,\n            ),\n        ),\n        horizontal: None,\n        vertical: None,\n    },\n)"}}
++{"run_id":"1791012081-879026980","line":602,"new":null,"old":null}
++{"run_id":"1791012081-879026980","line":602,"new":{"module_name":"niri_config__input__tests","snapshot_name":"parse_scroll_factor_split-2","metadata":{"source":"niri-config/src/input.rs","assertion_line":602,"expression":"parsed.touchpad.scroll_factor"},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: Some(\n            FloatOrInt(\n                -1.5,\n            ),\n        ),\n        vertical: Some(\n            FloatOrInt(\n                0.5,\n            ),\n        ),\n    },\n)"},"old":{"module_name":"niri_config__input__tests","metadata":{},"snapshot":"Some(\n    ScrollFactor {\n        base: None,\n        horizontal: Some(\n            FloatOrInt(\n                -1.5,\n            ),\n        ),\n        vertical: Some(\n            FloatOrInt(\n                0.5,\n            ),\n        ),\n    },\n)"}}
++{"run_id":"1791012106-236541290","line":720,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":635,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":585,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":677,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":543,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":648,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":602,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":694,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":556,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":732,"new":null,"old":null}
++{"run_id":"1791012106-236541290","line":744,"new":null,"old":null}
+diff --git a/niri-config/src/.output.rs.pending-snap b/niri-config/src/.output.rs.pending-snap
+new file mode 100644
+index 00000000..15496a11
+--- /dev/null
++++ b/niri-config/src/.output.rs.pending-snap
+@@ -0,0 +1,2 @@
++{"run_id":"1791012081-879026980","line":670,"new":{"module_name":"niri_config__output__tests","snapshot_name":"output_name_sorting","metadata":{"source":"niri-config/src/output.rs","assertion_line":670,"expression":"names"},"snapshot":"[\n    \"Unknown A A | DP-3\",\n    \"A Unknown A | DP-3\",\n    \"A A Unknown | DP-3\",\n    \"A A A | DP-4\",\n    \"A A A | DP-5\",\n    \"A A B | DP-3\",\n    \"A B A | DP-3\",\n    \"B A A | DP-3\",\n    \"DP-1 | DP-1\",\n    \"DP-2 | DP-2\",\n]"},"old":{"module_name":"niri_config__output__tests","metadata":{},"snapshot":"[\n    \"Unknown A A | DP-3\",\n    \"A Unknown A | DP-3\",\n    \"A A Unknown | DP-3\",\n    \"A A A | DP-4\",\n    \"A A A | DP-5\",\n    \"A A B | DP-3\",\n    \"A B A | DP-3\",\n    \"B A A | DP-3\",\n    \"DP-1 | DP-1\",\n    \"DP-2 | DP-2\",\n]"}}
++{"run_id":"1791012106-236541290","line":670,"new":null,"old":null}
+diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
+index b8c8439d..bcbb4294 100644
+--- a/niri-config/src/lib.rs
++++ b/niri-config/src/lib.rs
+@@ -2314,6 +2314,7 @@ mod tests {
+             },
+             screencasting: Screencasting {
+                 frame_rate_hz: 60,
++                max_pixels: 4096000,
+             },
+             workspaces: [
+                 Workspace {
+diff --git a/niri-config/src/screencasting.rs b/niri-config/src/screencasting.rs
+index 0b1e2d56..6c74039f 100644
+--- a/niri-config/src/screencasting.rs
++++ b/niri-config/src/screencasting.rs
+@@ -12,12 +12,20 @@ use crate::utils::MergeWith;
+ pub struct Screencasting {
+     /// Frame rate advertised to clients, in Hz.
+     pub frame_rate_hz: u32,
++    /// Upper bound on the pixel count of a captured frame.
++    ///
++    /// The size is scaled down to fit, keeping the aspect ratio, so the
++    /// advertised format, the buffers and the render all work on the same
++    /// smaller frame.
++    pub max_pixels: u64,
+ }
+ 
+ #[derive(knuffel::Decode, Debug, Default, PartialEq)]
+ pub struct ScreencastingPart {
+     #[knuffel(child, unwrap(argument))]
+     pub frame_rate_hz: Option<u32>,
++    #[knuffel(child, unwrap(argument))]
++    pub max_pixels: Option<u64>,
+ }
+ 
+ impl Screencasting {
+@@ -25,25 +33,35 @@ impl Screencasting {
+     pub const FRAME_RATE_MAX: u32 = 120;
+     pub const FRAME_RATE_DEFAULT: u32 = 60;
+ 
++    /// 160x120, below which a capture is useless.
++    pub const MAX_PIXELS_MIN: u64 = 160 * 120;
++    /// 2560x1600, the size this limit was originally written for.
++    pub const MAX_PIXELS_DEFAULT: u64 = 2560 * 1600;
++    pub const MAX_PIXELS_MAX: u64 = 7680 * 4320;
++
+     /// Out-of-range values are clamped rather than rejected, so a typo cannot
+     /// leave the compositor advertising a rate that stalls the machine.
+     pub fn frame_rate_hz(&self) -> u32 {
+         self.frame_rate_hz.clamp(Self::FRAME_RATE_MIN, Self::FRAME_RATE_MAX)
+     }
+ 
++    pub fn max_pixels(&self) -> u64 {
++        self.max_pixels.clamp(Self::MAX_PIXELS_MIN, Self::MAX_PIXELS_MAX)
++    }
+ }
+ 
+ impl Default for Screencasting {
+     fn default() -> Self {
+         Self {
+             frame_rate_hz: Self::FRAME_RATE_DEFAULT,
++            max_pixels: Self::MAX_PIXELS_DEFAULT,
+         }
+     }
+ }
+ 
+ impl MergeWith<ScreencastingPart> for Screencasting {
+     fn merge_with(&mut self, part: &ScreencastingPart) {
+-        merge_clone!((self, part), frame_rate_hz);
++        merge_clone!((self, part), frame_rate_hz, max_pixels);
+     }
+ }
+ 
+@@ -55,26 +73,43 @@ mod tests {
+     fn defaults_match_the_documented_values() {
+         let s = Screencasting::default();
+         assert_eq!(s.frame_rate_hz(), 60);
++        assert_eq!(s.max_pixels(), 2560 * 1600);
+     }
+ 
+     #[test]
+     fn out_of_range_values_are_clamped() {
+         let too_fast = Screencasting {
+             frame_rate_hz: 500,
++            ..Default::default()
+         };
+         assert_eq!(too_fast.frame_rate_hz(), Screencasting::FRAME_RATE_MAX);
+ 
+         let too_slow = Screencasting {
+             frame_rate_hz: 1,
++            ..Default::default()
+         };
+         assert_eq!(too_slow.frame_rate_hz(), Screencasting::FRAME_RATE_MIN);
++
++        let too_small = Screencasting {
++            max_pixels: 1,
++            ..Default::default()
++        };
++        assert_eq!(too_small.max_pixels(), Screencasting::MAX_PIXELS_MIN);
++
++        let too_large = Screencasting {
++            max_pixels: u64::MAX,
++            ..Default::default()
++        };
++        assert_eq!(too_large.max_pixels(), Screencasting::MAX_PIXELS_MAX);
+     }
+ 
+     #[test]
+     fn values_inside_the_range_pass_through() {
+         let s = Screencasting {
+             frame_rate_hz: 30,
++            max_pixels: 1280 * 800,
+         };
+         assert_eq!(s.frame_rate_hz(), 30);
++        assert_eq!(s.max_pixels(), 1280 * 800);
+     }
+ }
+diff --git a/src/niri.rs b/src/niri.rs
+index abebcc2e..d5f841f4 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -169,7 +169,7 @@ use crate::render_helpers::surface::push_elements_from_surface_tree;
+ use crate::render_helpers::texture::TextureBuffer;
+ use crate::render_helpers::xray::{Xray, XrayPos};
+ use crate::render_helpers::{
+-    encompassing_geo, render_to_dmabuf, render_to_encompassing_texture, render_to_shm,
++    encompassing_geo, render_to_dmabuf, render_to_encompassing_texture, render_to_shm, tracker_size,
+     render_to_texture, render_to_vec, shaders, RenderCtx, RenderTarget,
+ };
+ #[cfg(feature = "xdp-gnome-screencast")]
+@@ -5640,8 +5640,16 @@ impl Niri {
+ 
+             let res = match capture_buffer {
+                 CaptureBuffer::Dma(dmabuf) => {
+-                    render_to_dmabuf(renderer, &mut s.damage_tracker, dmabuf, elements, states)
+-                        .map(Some)
++                    let size = tracker_size(&s.damage_tracker);
++                    render_to_dmabuf(
++                        renderer,
++                        &mut s.damage_tracker,
++                        dmabuf,
++                        elements,
++                        states,
++                        size,
++                    )
++                    .map(Some)
+                 }
+                 CaptureBuffer::Shm => render_to_shm(
+                     renderer,
+@@ -5971,9 +5979,16 @@ impl Niri {
+     ) -> anyhow::Result<Option<SyncPoint>> {
+         let sync = match screencopy.buffer() {
+             ScreencopyBuffer::Dmabuf(dmabuf) => {
+-                let sync =
+-                    render_to_dmabuf(renderer, damage_tracker, dmabuf.clone(), elements, states)
+-                        .context("error rendering to screencopy dmabuf")?;
++                let size = tracker_size(damage_tracker);
++                let sync = render_to_dmabuf(
++                    renderer,
++                    damage_tracker,
++                    dmabuf.clone(),
++                    elements,
++                    states,
++                    size,
++                )
++                .context("error rendering to screencopy dmabuf")?;
+                 Some(sync)
+             }
+             ScreencopyBuffer::Shm(wl_buffer) => {
+diff --git a/src/render_helpers/mod.rs b/src/render_helpers/mod.rs
+index 3ae027c8..7e8365e5 100644
+--- a/src/render_helpers/mod.rs
++++ b/src/render_helpers/mod.rs
+@@ -12,7 +12,7 @@ use smithay::backend::renderer::gles::{
+ };
+ use smithay::backend::renderer::sync::SyncPoint;
+ use smithay::backend::renderer::{
+-    Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Texture as _,
++    Bind, Blit, Color32F, ExportMem, Frame, Offscreen, Renderer, Texture as _, TextureFilter,
+ };
+ use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+ use smithay::reexports::wayland_server::protocol::wl_shm;
+@@ -254,32 +254,82 @@ pub fn render_and_download(
+ pub fn render_and_download_with_damage(
+     renderer: &mut GlesRenderer,
+     damage_tracker: &mut OutputDamageTracker,
++    capture_size: Size<i32, Physical>,
+     fourcc: Fourcc,
+     elements: &[impl RenderElement<GlesRenderer>],
+     states: RenderElementStates,
+ ) -> anyhow::Result<GlesMapping> {
+     let _span = tracy_client::span!();
+ 
+-    let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
+-    let mut texture = create_texture(renderer, size, fourcc).context("error creating texture")?;
+-    let mut target = renderer
+-        .bind(&mut texture)
+-        .context("error binding texture")?;
++    // Rendering always happens at the output's size: the damage tracker, the
++    // element geometry and the cursor metadata all live in output coordinates.
++    // When the capture is smaller (see `screencasting { max-pixels }`), the
++    // finished frame is scaled down in a second pass, which also makes the
++    // download below smaller.
++    let (mode_size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
++    let mut texture =
++        create_texture(renderer, mode_size, fourcc).context("error creating texture")?;
++    {
++        let mut target = renderer
++            .bind(&mut texture)
++            .context("error binding texture")?;
+ 
+-    let _res = damage_tracker
+-        .render_output_with_states(
+-            renderer,
+-            &mut target,
+-            0,
+-            elements,
+-            Color32F::TRANSPARENT,
+-            states,
+-        )
+-        .context("error rendering")?;
++        let _res = damage_tracker
++            .render_output_with_states(
++                renderer,
++                &mut target,
++                0,
++                elements,
++                Color32F::TRANSPARENT,
++                states,
++            )
++            .context("error rendering")?;
++    }
++
++    if capture_size == mode_size {
++        let target = renderer.bind(&mut texture).context("error binding texture")?;
++        return copy_framebuffer(renderer, &target, fourcc).context("error copying framebuffer");
++    }
+ 
++    let mut scaled =
++        create_texture(renderer, capture_size, fourcc).context("error creating texture")?;
++    {
++        let src = renderer.bind(&mut texture).context("error binding texture")?;
++        let mut dst = renderer
++            .bind(&mut scaled)
++            .context("error binding texture")?;
++        blit_scaled(renderer, &src, &mut dst, mode_size, capture_size)?;
++    }
++    let target = renderer.bind(&mut scaled).context("error binding texture")?;
+     copy_framebuffer(renderer, &target, fourcc).context("error copying framebuffer")
+ }
+ 
++/// The size the damage tracker renders at, i.e. the output's size.
++pub fn tracker_size(damage_tracker: &OutputDamageTracker) -> Size<i32, Physical> {
++    let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
++    size
++}
++
++/// Copy `src` into `dst`, scaling it to fit. Returns the GPU sync point.
++pub fn blit_scaled(
++    renderer: &mut GlesRenderer,
++    src: &GlesTarget<'_>,
++    dst: &mut GlesTarget<'_>,
++    src_size: Size<i32, Physical>,
++    dst_size: Size<i32, Physical>,
++) -> anyhow::Result<SyncPoint> {
++    let _span = tracy_client::span!();
++    renderer
++        .blit(
++            src,
++            dst,
++            Rectangle::from_size(src_size),
++            Rectangle::from_size(dst_size),
++            TextureFilter::Linear,
++        )
++        .context("error scaling frame")
++}
++
+ pub fn render_to_vec(
+     renderer: &mut GlesRenderer,
+     size: Size<i32, Physical>,
+@@ -304,26 +354,51 @@ pub fn render_to_dmabuf(
+     mut dmabuf: Dmabuf,
+     elements: &[impl RenderElement<GlesRenderer>],
+     states: RenderElementStates,
++    capture_size: Size<i32, Physical>,
+ ) -> anyhow::Result<SyncPoint> {
+     let _span = tracy_client::span!();
+-    let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
++    let (mode_size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
+     ensure!(
+-        dmabuf.width() == size.w as u32 && dmabuf.height() == size.h as u32,
++        dmabuf.width() == capture_size.w as u32 && dmabuf.height() == capture_size.h as u32,
+         "invalid buffer size"
+     );
+ 
+-    let mut target = renderer.bind(&mut dmabuf).context("error binding dmabuf")?;
+-    let res = damage_tracker
+-        .render_output_with_states(
+-            renderer,
+-            &mut target,
+-            0,
+-            elements,
+-            Color32F::TRANSPARENT,
+-            states,
+-        )
+-        .context("error rendering to dmabuf")?;
+-    Ok(res.sync)
++    if capture_size == mode_size {
++        let mut target = renderer.bind(&mut dmabuf).context("error binding dmabuf")?;
++        let res = damage_tracker
++            .render_output_with_states(
++                renderer,
++                &mut target,
++                0,
++                elements,
++                Color32F::TRANSPARENT,
++                states,
++            )
++            .context("error rendering to dmabuf")?;
++        return Ok(res.sync);
++    }
++
++    // The capture is smaller than the output: render at the output's size,
++    // then scale the result down into the client's buffer.
++    let fourcc = dmabuf.format().code;
++    let mut texture =
++        create_texture(renderer, mode_size, fourcc).context("error creating texture")?;
++    {
++        let mut target = renderer.bind(&mut texture).context("error binding texture")?;
++        let _res = damage_tracker
++            .render_output_with_states(
++                renderer,
++                &mut target,
++                0,
++                elements,
++                Color32F::TRANSPARENT,
++                states,
++            )
++            .context("error rendering")?;
++    }
++    let src = renderer.bind(&mut texture).context("error binding texture")?;
++    let mut dst = renderer.bind(&mut dmabuf).context("error binding dmabuf")?;
++    blit_scaled(renderer, &src, &mut dst, mode_size, capture_size)
+ }
+ 
+ pub fn render_to_shm(
+diff --git a/src/screencasting/mod.rs b/src/screencasting/mod.rs
+index 9477616a..ccea619f 100644
+--- a/src/screencasting/mod.rs
++++ b/src/screencasting/mod.rs
+@@ -79,11 +79,9 @@ impl State {
+     fn prepare_pw_cast(&mut self) -> anyhow::Result<Option<(GbmDevice<DeviceFd>, FormatSet)>> {
+         // Ensure PipeWire is initialized.
+         if self.niri.casting.pipewire.is_none() {
+-            let screencasting = self.niri.config.borrow().screencasting;
+             let pw = PipeWire::new(
+                 self.niri.event_loop.clone(),
+                 self.niri.casting.pw_to_niri.clone(),
+-                screencasting,
+             )
+             .context("error initializing PipeWire")?;
+             self.niri.casting.pipewire = Some(pw);
+@@ -351,6 +349,9 @@ impl State {
+                 return;
+             }
+         };
++        // Read the limits here rather than at startup so that changing the
++        // config applies to the next share instead of the next session.
++        let screencasting = self.niri.config.borrow().screencasting;
+         let pw = self.niri.casting.pipewire.as_ref().unwrap();
+ 
+         // Alpha is always true since the dynamic target can change between window & output.
+@@ -369,6 +370,7 @@ impl State {
+                 alpha,
+                 pending.cursor_mode,
+                 pending.signal_ctx,
++                screencasting,
+             );
+             match res {
+                 Ok(mut cast) => {
+@@ -442,6 +444,7 @@ impl State {
+                         return;
+                     }
+                 };
++                let screencasting = self.niri.config.borrow().screencasting;
+                 let pw = self.niri.casting.pipewire.as_ref().unwrap();
+ 
+                 let res = pw.start_cast(
+@@ -454,6 +457,7 @@ impl State {
+                     alpha,
+                     cursor_mode,
+                     signal_ctx,
++                    screencasting,
+                 );
+                 match res {
+                     Ok(cast) => {
+diff --git a/src/screencasting/pw_utils.rs b/src/screencasting/pw_utils.rs
+index dccd591a..930c83a6 100644
+--- a/src/screencasting/pw_utils.rs
++++ b/src/screencasting/pw_utils.rs
+@@ -56,7 +56,8 @@ use zbus::object_server::SignalEmitter;
+ use crate::dbus::mutter_screen_cast::{self, CursorMode};
+ use crate::niri::{CastTarget, State};
+ use crate::render_helpers::{
+-    clear_dmabuf, encompassing_geo, render_and_download, render_and_download_with_damage,
++    blit_scaled, clear_dmabuf, encompassing_geo, render_and_download,
++    render_and_download_with_damage,
+     render_to_dmabuf,
+ };
+ use crate::screencasting::CastRenderElement;
+@@ -87,9 +88,6 @@ pub struct PipeWire {
+     pub token: RegistrationToken,
+     event_loop: LoopHandle<'static, State>,
+     to_niri: calloop::channel::Sender<PwToNiri>,
+-    /// Screencast limits, read from the niri config at startup. A config reload
+-    /// only applies to newly started casts.
+-    frame_rate_hz: u32,
+ }
+ 
+ pub enum PwToNiri {
+@@ -112,6 +110,7 @@ pub struct Cast {
+     cursor_mode: CursorMode,
+     /// Capture limits for this stream, taken from the config when it started.
+     frame_rate_hz: u32,
++    max_pixels: u64,
+     last_frame_time: Duration,
+     last_frame_interval: Duration,
+     scheduled_redraw: Option<RegistrationToken>,
+@@ -232,6 +231,7 @@ fn make_video_params(
+     format: VideoFormat,
+     modifiers: &[Modifier],
+     size: Size<u32, Physical>,
++    max_pixels: u64,
+     // The output refresh rate is deliberately ignored: the advertised rate
+     // is capped by the `screencasting { frame-rate-hz }` config instead of
+     // following the output.
+@@ -242,7 +242,7 @@ fn make_video_params(
+     // dmabuf available). Keep that, but restore the original framerate
+     // handling: VideoFramerate 0/1 means "unlimited" and makes PipeWire push
+     // frames far faster than a software encoder drains them.
+-    let size = cap_capture_size(size);
++    let size = cap_capture_size(size, max_pixels);
+ 
+     let mut properties = vec![
+         pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
+@@ -316,7 +316,7 @@ fn make_video_params(
+ }
+ 
+ /// Largest number of pixels we advertise to clients.
+-const MAX_CAPTURE_PIXELS: u64 = 2560 * 1600;
++
+ 
+ /// Frame rate we advertise to screencast clients.
+ ///
+@@ -325,20 +325,20 @@ const MAX_CAPTURE_PIXELS: u64 = 2560 * 1600;
+ /// unconsumed raw frames pile up as shmem until the machine stalls. The rate
+ /// itself is configurable via the `screencasting { frame-rate-hz }` block.
+ 
+-/// Scale a capture size down so it fits within `MAX_CAPTURE_PIXELS`.
++/// Scale a capture size down so it fits within `screencasting { max-pixels }`.
+ ///
+ /// Electron-based clients keep raw frames around in every renderer process;
+ /// handing them an uncapped 2560x1600 stream makes them consume several GiB
+ /// within seconds, which freezes the whole desktop once RAM fills up. Scaling
+ /// down keeps the aspect ratio and rounds to even values so that chroma
+ /// subsampling stays sane.
+-fn cap_capture_size(size: Size<u32, Physical>) -> Size<u32, Physical> {
++fn cap_capture_size(size: Size<u32, Physical>, max_pixels: u64) -> Size<u32, Physical> {
+     let pixels = u64::from(size.w) * u64::from(size.h);
+-    if pixels <= MAX_CAPTURE_PIXELS || pixels == 0 {
++    if pixels <= max_pixels || pixels == 0 {
+         return size;
+     }
+ 
+-    let scale = (MAX_CAPTURE_PIXELS as f64 / pixels as f64).sqrt();
++    let scale = (max_pixels as f64 / pixels as f64).sqrt();
+     let new_w = ((f64::from(size.w) * scale).round() as u32) & !1;
+     let new_h = ((f64::from(size.h) * scale).round() as u32) & !1;
+ 
+@@ -354,6 +354,7 @@ fn make_initial_video_params(
+     size: Size<u32, Physical>,
+     refresh: u32,
+     frame_rate_hz: u32,
++    max_pixels: u64,
+     alpha: bool,
+ ) -> Vec<pod::Object> {
+     let mut rv = Vec::new();
+@@ -379,9 +380,9 @@ fn make_initial_video_params(
+         trace!("offering: {modifiers:?}");
+ 
+         if !modifiers.is_empty() {
+-            rv.push(make_video_params(format, &modifiers, size, refresh, frame_rate_hz));
++            rv.push(make_video_params(format, &modifiers, size, max_pixels, refresh, frame_rate_hz));
+         }
+-        rv.push(make_video_params(format, &[], size, refresh, frame_rate_hz));
++        rv.push(make_video_params(format, &[], size, max_pixels, refresh, frame_rate_hz));
+     };
+ 
+     if alpha {
+@@ -393,8 +394,8 @@ fn make_initial_video_params(
+ }
+ 
+ macro_rules! make_params {
+-    ($params:ident, $formats:expr, $size:expr, $refresh:expr, $hz:expr, $alpha:expr) => {
+-        let $params = make_initial_video_params($formats, $size, $refresh, $hz, $alpha);
++    ($params:ident, $formats:expr, $size:expr, $refresh:expr, $hz:expr, $max_pixels:expr, $alpha:expr) => {
++        let $params = make_initial_video_params($formats, $size, $refresh, $hz, $max_pixels, $alpha);
+         let mut bufs = [const { Vec::new() }; 6]; // Maximum possible params len.
+         let mut $params: Vec<_> = $params
+             .into_iter()
+@@ -408,7 +409,6 @@ impl PipeWire {
+     pub fn new(
+         event_loop: LoopHandle<'static, State>,
+         to_niri: calloop::channel::Sender<PwToNiri>,
+-        screencasting: Screencasting,
+     ) -> anyhow::Result<Self> {
+         let main_loop = MainLoopRc::new(None).context("error creating MainLoop")?;
+         let context = ContextRc::new(&main_loop, None).context("error creating Context")?;
+@@ -451,7 +451,6 @@ impl PipeWire {
+             token,
+             event_loop,
+             to_niri,
+-            frame_rate_hz: screencasting.frame_rate_hz(),
+         })
+     }
+ 
+@@ -467,11 +466,13 @@ impl PipeWire {
+         alpha: bool,
+         mut cursor_mode: CursorMode,
+         signal_ctx: SignalEmitter<'static>,
++        screencasting: Screencasting,
+     ) -> anyhow::Result<Cast> {
+         let _span = tracy_client::span!("PipeWire::start_cast");
+         let _span = debug_span!("start_cast", %session_id).entered();
+ 
+-        let frame_rate_hz = self.frame_rate_hz;
++        let frame_rate_hz = screencasting.frame_rate_hz();
++        let max_pixels = screencasting.max_pixels();
+ 
+         let to_niri_ = self.to_niri.clone();
+         let stop_cast = move || {
+@@ -502,7 +503,7 @@ impl PipeWire {
+             cursor_mode = CursorMode::Embedded;
+         }
+ 
+-        let pending_size = Size::from((size.w as u32, size.h as u32));
++        let pending_size = cap_capture_size(Size::from((size.w as u32, size.h as u32)), max_pixels);
+ 
+         let (gbm, formats) = if let Some((gbm, formats)) = gbm {
+             (Some(gbm), formats)
+@@ -719,6 +720,7 @@ impl PipeWire {
+                                     format.format(),
+                                     &[modifier],
+                                     format_size,
++                                    max_pixels,
+                                     inner.refresh,
+                                     frame_rate_hz,
+                                 );
+@@ -731,6 +733,7 @@ impl PipeWire {
+                                     format_size,
+                                     inner.refresh,
+                                     frame_rate_hz,
++                                    max_pixels,
+                                     format_has_alpha
+                                 );
+                                 params.insert(0, pod);
+@@ -985,7 +988,7 @@ impl PipeWire {
+ 
+         trace!("starting pw stream with size={pending_size:?}, refresh={refresh:?}");
+ 
+-        make_params!(params, &formats, pending_size, refresh, frame_rate_hz, alpha);
++        make_params!(params, &formats, pending_size, refresh, frame_rate_hz, max_pixels, alpha);
+         stream
+             .connect(
+                 Direction::Output,
+@@ -1006,6 +1009,7 @@ impl PipeWire {
+             formats,
+             offer_alpha: alpha,
+             frame_rate_hz,
++            max_pixels,
+             cursor_mode,
+             last_frame_time: Duration::ZERO,
+             last_frame_interval: Duration::ZERO,
+@@ -1033,7 +1037,7 @@ impl Cast {
+         // the advertised format, the allocated buffers and this state machine
+         // all agree on the same (scaled) size. Capping only the format makes
+         // `pending_size` never match and every frame gets skipped.
+-        let new_size = cap_capture_size(Size::from((size.w as u32, size.h as u32)));
++        let new_size = cap_capture_size(Size::from((size.w as u32, size.h as u32)), self.max_pixels);
+ 
+         let state = &mut inner.state;
+         if matches!(state, CastState::Ready { size, .. } if *size == new_size) {
+@@ -1058,6 +1062,7 @@ impl Cast {
+             new_size,
+             inner.refresh,
+             self.frame_rate_hz,
++            self.max_pixels,
+             self.offer_alpha
+         );
+         self.stream
+@@ -1079,7 +1084,15 @@ impl Cast {
+         inner.refresh = refresh;
+ 
+         let size = inner.state.expected_format_size();
+-        make_params!(params, &self.formats, size, refresh, self.frame_rate_hz, self.offer_alpha);
++        make_params!(
++            params,
++            &self.formats,
++            size,
++            refresh,
++            self.frame_rate_hz,
++            self.max_pixels,
++            self.offer_alpha
++        );
+         self.stream
+             .update_params(&mut params)
+             .context("error updating stream params")?;
+@@ -1284,6 +1297,12 @@ impl Cast {
+     ) -> bool {
+         let mut inner = self.inner.borrow_mut();
+ 
++        // The format the client settled on. It can be smaller than the output
++        // (see `screencasting { max-pixels }`), in which case the finished
++        // frame is scaled down before it is handed out.
++        let capture = inner.state.expected_format_size();
++        let capture_size = Size::from((capture.w as i32, capture.h as i32));
++
+         let CastState::Ready {
+             damage_tracker,
+             cursor_damage_tracker,
+@@ -1366,7 +1385,14 @@ impl Cast {
+             let spa_buffer = (*buffer).buffer;
+ 
+             if self.cursor_mode == CursorMode::Metadata {
+-                add_cursor_metadata(renderer, spa_buffer, cursor_data, redraw_cursor);
++                // Cursor metadata is expressed relative to the frame, so it
++                // has to shrink along with the frame.
++                let cursor_scale = if size.w > 0 {
++                    f64::from(capture_size.w) / f64::from(size.w)
++                } else {
++                    1.0
++                };
++                add_cursor_metadata(renderer, spa_buffer, cursor_data, redraw_cursor, cursor_scale);
+             }
+ 
+             // FIXME: would be good to skip rendering the full frame if only the pointer changed.
+@@ -1377,7 +1403,7 @@ impl Cast {
+             let res = match (*(*spa_buffer).datas).type_ {
+                 x if x == DataType::DmaBuf.as_raw() => {
+                     let dmabuf = inner_.dmabufs[&fd].clone();
+-                    render_to_dmabuf(renderer, damage_tracker, dmabuf, elements, states)
++                    render_to_dmabuf(renderer, damage_tracker, dmabuf, elements, states, capture_size)
+                         .map(|x| (x, SharingBuf::Dma))
+                 }
+                 x if x == DataType::MemFd.as_raw() => {
+@@ -1389,7 +1415,7 @@ impl Cast {
+                         Fourcc::Xrgb8888
+                     };
+ 
+-                    render_to_shmbuf(renderer, damage_tracker, shmbuf, fourcc, elements, states)
++                    render_to_shmbuf(renderer, damage_tracker, shmbuf, fourcc, elements, states, capture_size)
+                         .map(|()| (SyncPoint::signaled(), SharingBuf::Shm(shmbuf.layout)))
+                 }
+                 _ => Err(anyhow::anyhow!(
+@@ -1881,6 +1907,7 @@ unsafe fn add_cursor_metadata(
+     spa_buffer: *mut spa_buffer,
+     cursor_data: &CursorData<impl RenderElement<GlesRenderer>>,
+     redraw: bool,
++    cursor_scale: f64,
+ ) {
+     unsafe {
+         let cursor_meta_ptr: *mut spa_meta_cursor = spa_buffer_find_meta_data(
+@@ -1894,10 +1921,10 @@ unsafe fn add_cursor_metadata(
+         };
+ 
+         cursor_meta.id = 1;
+-        cursor_meta.position.x = cursor_data.location.x;
+-        cursor_meta.position.y = cursor_data.location.y;
+-        cursor_meta.hotspot.x = cursor_data.hotspot.x;
+-        cursor_meta.hotspot.y = cursor_data.hotspot.y;
++        cursor_meta.position.x = (f64::from(cursor_data.location.x) * cursor_scale).round() as i32;
++        cursor_meta.position.y = (f64::from(cursor_data.location.y) * cursor_scale).round() as i32;
++        cursor_meta.hotspot.x = (f64::from(cursor_data.hotspot.x) * cursor_scale).round() as i32;
++        cursor_meta.hotspot.y = (f64::from(cursor_data.hotspot.y) * cursor_scale).round() as i32;
+ 
+         if !redraw {
+             trace!("cursor not damaged, skipping rerendering");
+@@ -1979,17 +2006,23 @@ fn render_to_shmbuf(
+     fourcc: Fourcc,
+     elements: &[impl RenderElement<GlesRenderer>],
+     states: RenderElementStates,
++    capture_size: Size<i32, Physical>,
+ ) -> anyhow::Result<()> {
+     let _span = tracy_client::span!();
+-    let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
+-    let expected_size = size.w as usize * size.h as usize * SHM_BYTES_PER_PIXEL;
++    let expected_size = capture_size.w as usize * capture_size.h as usize * SHM_BYTES_PER_PIXEL;
+     ensure!(
+         buffer.layout.size_usize() == expected_size,
+         "invalid buffer size"
+     );
+ 
+-    let mapping =
+-        render_and_download_with_damage(renderer, damage_tracker, fourcc, elements, states)?;
++    let mapping = render_and_download_with_damage(
++        renderer,
++        damage_tracker,
++        capture_size,
++        fourcc,
++        elements,
++        states,
++    )?;
+ 
+     let bytes = renderer
+         .map_texture(&mapping)
+-- 
+2.56.0
+
