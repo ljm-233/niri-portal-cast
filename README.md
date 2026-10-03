@@ -60,9 +60,11 @@ screencasting {
 - **不要写 `max-shm-buffers`**：补丁已删掉这个选项，写了 niri 会直接拒绝启动。
 - `transparent_hugepage=shmem:never` 这类内核命令行写法无效，内核会忽略它，实际策略仍是 `advise`。
 - PKGBUILD 锁的是上游 commit `ed22699d`，不要换成 tag（补丁打在 tag 上有 6 个 hunk 失败）。
+
 ## 详细报告
 
 根因、实测数据、给上游的说明：`docs/qq-share-leak.md`（包内也装一份在 `/usr/share/doc/niri-portal-cast/`）。
+
 ## 许可证
 
 GPL-3.0-or-later，与 niri 本身一致。
