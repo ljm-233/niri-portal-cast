@@ -19,6 +19,7 @@ sudo pacman -U niri-portal-cast-*.pkg.tar.zst     # 提示替换官方 niri，�
 ```
 niri-portal-cast-tune              # 看/改档位（帧率与分辨率上限）
 niri-portal-cast-tune menu         # 弹菜单分开选：① 分辨率 ② 帧率
+niri-portal-cast-tune brake off|on      # 关 / 开内存刹车（包内默认为随会话自启）
 niri-portal-doctor                 # 共享不出画面时先跑它；退出码 0 = 正常，1 = 有问题
 niri-shm-attrib                    # 看内存涨在哪个进程；随会话自启，超阈值自动掐流
 ```

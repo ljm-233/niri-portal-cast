@@ -17,6 +17,9 @@
 #   niri-portal-cast-tune 1080p|2k|2.5k|720p|smooth|balanced|saver|safe
 #   niri-portal-cast-tune fps 30       # 只改帧率
 #   niri-portal-cast-tune size 1920x1080   # 只改分辨率（off = 不限制）
+#   niri-portal-cast-tune brake        # 看内存刹车状态（= brake status）
+#   niri-portal-cast-tune brake off    # 关掉内存刹车（停服务并清掉手工挂的残留）
+#   niri-portal-cast-tune brake on     # 打开内存刹车（阈值 = 开机基线 + 2 GiB）
 
 set -uo pipefail
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/niri/config.kdl"
@@ -142,6 +145,75 @@ pick_fps() {
 	echo "$fps"
 }
 
+# ---------------------------------------------------------------------------
+# 内存刹车开关：只管 systemd 用户服务与残留采样进程，不碰 frame-rate-hz / max-pixels
+# 只认真正在跑的采样进程：它的第一个命令词必须是 niri-shm-attrib（或指向它的路径）。
+# 不能用 pgrep -f 直接通杀 —— 外层 shell 的命令行里只要提到这个名字就会被误杀（实测踩过）。
+brake_pids() {
+	local p cmd
+	for p in $(pgrep -f 'niri-shm-attrib' 2>/dev/null); do
+		[ "$p" = "$$" ] && continue
+		[ "$p" = "${PPID:-0}" ] && continue
+		cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || continue
+		case "$cmd" in
+			*/niri-shm-attrib[[:space:]]*|niri-shm-attrib[[:space:]]*) printf '%s\n' "$p" ;;
+		esac
+	done
+}
+
+brake_status() {
+	local en act procs
+	if command -v systemctl >/dev/null 2>&1; then
+		en=$(systemctl --user is-enabled niri-shm-attrib 2>/dev/null || true)
+		act=$(systemctl --user is-active niri-shm-attrib 2>/dev/null || true)
+		case "$en" in enabled) en="已启用" ;; disabled) en="已禁用" ;; *) en="${en:-未知}" ;; esac
+		case "$act" in active) act="运行中" ;; inactive) act="未运行" ;; *) act="${act:-未知}" ;; esac
+	else
+		en="systemd 不可用"; act="systemd 不可用"
+	fi
+	procs=$(brake_pids | wc -l)
+	printf '内存刹车：服务 %s / %s，实际在跑的采样进程 %s 个\n' "$en" "$act" "$procs"
+	if [ "$act" = "运行中" ]; then
+		printf '  共享内存失控时自动掐流，不会冻机。关闭：niri-portal-cast-tune brake off\n'
+	else
+		printf '  当前没有刹车，内存失控时只能靠降档自保。开启：niri-portal-cast-tune brake on\n'
+	fi
+}
+
+brake_off() {
+	local pids p running=no
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl --user is-active niri-shm-attrib >/dev/null 2>&1 && running=yes
+		systemctl --user disable --now niri-shm-attrib >/dev/null 2>&1 || true
+	fi
+	# 只清 niri-shm-attrib 自己的残留进程：先列出再杀，绝不按名字通杀别的程序
+	pids=$(brake_pids)
+	if [ -n "$pids" ]; then
+		running=yes
+		printf '清理残留采样进程（只匹配 niri-shm-attrib）：%s\n' "$(printf '%s' "$pids" | tr '\n' ' ')"
+		for p in $pids; do
+			[ "$p" = "$$" ] && continue
+			kill "$p" 2>/dev/null || true
+		done
+	else
+		printf '没有残留的手工采样进程。\n'
+	fi
+	if [ "$running" = no ]; then
+		printf '刹车本来就是关的。\n'
+		return 0
+	fi
+	printf '刹车已关闭：共享不再被自动掐流（内存失控时就只能靠降档自保了）。\n'
+}
+
+brake_on() {
+	command -v systemctl >/dev/null 2>&1 || die "systemd 不可用，无法开启刹车"
+	if systemctl --user enable --now niri-shm-attrib >/dev/null 2>&1; then
+		printf '刹车已开启（阈值 = 开机基线 + 2 GiB）。\n'
+	else
+		die "开启失败，手工试：systemctl --user enable --now niri-shm-attrib"
+	fi
+}
+
 [ $# -gt 0 ] || { show; exit 0; }
 
 case "$1" in
@@ -169,6 +241,13 @@ case "$1" in
 		apply "$cur_fps" "$px" || exit $?
 		printf '② 接着选帧率……\n'
 		exec "$0" menu-fps ;;
+	brake)
+		case "${2:-status}" in
+			off)    brake_off ;;
+			on)     brake_on ;;
+			status|"") brake_status ;;
+			*)      die "不认识的参数：brake $2（用 brake / brake on / brake off）" ;;
+		esac ;;
 	-h|--help) sed -n '2,26p' "$0"; exit 0 ;;
 	*) die "不认识的档位：$1（用 menu / menu-res / menu-fps / 1080p / 2k / 2.5k / fps N / size WxH）" ;;
 esac
