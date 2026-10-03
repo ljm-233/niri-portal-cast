@@ -1,8 +1,8 @@
 # niri-portal-cast
 
-给 niri 打补丁，让 QQ、飞书等 Electron 客户端的屏幕共享能用。
+给 niri 打补丁，让 QQ、飞书等 Electron 客户端的屏幕共享能用。没有它时，niri 上共享给这些客户端根本没有画面。
 
-没有它时，niri 上共享给这些客户端根本没有画面。补丁做三件事：宣告 shm 格式、补门户能力位、限制帧率与采集分辨率。三个工具随包安装。
+补丁做三件事：宣告 shm 格式、补门户能力位、限制帧率与采集分辨率。三个工具随包安装。
 
 ## 装
 
@@ -51,9 +51,7 @@ screencasting {
 }
 ```
 
-不写就用默认值。`max-pixels` 是每帧字节的旋钮：宣告尺寸按它等比缩小，渲染结果缩放到该尺寸后才交给客户端。
-
-档位名：`smooth 2.5k 2k 1080p balanced 720p saver safe`，只改一项用 `niri-portal-cast-tune fps 30` 或 `size 1920x1080`（`off` = 不限制）。
+不写就用默认值。`max-pixels` 是每帧字节的旋钮：宣告尺寸按它等比缩小，渲染结果缩放到该尺寸后才交给客户端。档位名：`smooth 2.5k 2k 1080p balanced 720p saver safe`，只改一项用 `niri-portal-cast-tune fps 30` 或 `size 1920x1080`（`off` = 不限制）。
 
 ## 已知限制
 
@@ -62,11 +60,9 @@ screencasting {
 - **不要写 `max-shm-buffers`**：补丁已删掉这个选项，写了 niri 会直接拒绝启动。
 - `transparent_hugepage=shmem:never` 这类内核命令行写法无效，内核会忽略它，实际策略仍是 `advise`。
 - PKGBUILD 锁的是上游 commit `ed22699d`，不要换成 tag（补丁打在 tag 上有 6 个 hunk 失败）。
-
 ## 详细报告
 
 根因、实测数据、给上游的说明：`docs/qq-share-leak.md`（包内也装一份在 `/usr/share/doc/niri-portal-cast/`）。
-
 ## 许可证
 
 GPL-3.0-or-later，与 niri 本身一致。
