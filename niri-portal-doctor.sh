@@ -288,6 +288,29 @@ if [ -r /sys/kernel/mm/transparent_hugepage/shmem_enabled ]; then
 	fi
 fi
 
+# 在线音频输出计数：逐个 wpctl inspect 判定，避免 wpctl status 的两个坑 ——
+#   ① Settings 里列的是 WirePlumber「记住的」默认设备，设备不在线也在；
+#   ② 在线 sink 在 wpctl status 里是描述文字，不是 node.name。
+# 输出：<有线数> <蓝牙数> <蓝牙档位>
+audio_graph_outputs() {
+	local id info wired=0 bt=0 prof=""
+	for id in $(wpctl status 2>/dev/null | grep -oE '^[^0-9]*[0-9]+\.' | grep -oE '[0-9]+'); do
+		info=$(wpctl inspect "$id" 2>/dev/null) || continue
+		case "$info" in
+			*'media.class = "Audio/Sink"'*) ;;
+			*) continue ;;
+		esac
+		case "$info" in
+			*'node.name = "alsa_output.'*) wired=$((wired + 1)) ;;
+			*'node.name = "bluez_output.'*)
+				bt=$((bt + 1))
+				[ -n "$prof" ] || prof=$(printf '%s\n' "$info" | grep 'api.bluez5.profile' | head -1 | sed 's/.*= *//; s/"//g')
+				;;
+		esac
+	done
+	printf '%s %s %s\n' "$wired" "$bt" "$prof"
+}
+
 # ---------------------------------------------------------------------------
 head_ "【七】音频图"
 
@@ -296,14 +319,25 @@ if ! have wpctl; then
 else
 	# 两种音频输出同时在线是采集线程崩掉或者直接放弃的头号原因：WirePlumber
 	# 在两者之间切换默认设备，PipeWire 重建整个图，客户端手里握的句柄全部失效。
-	wired=$(wpctl status 2>/dev/null | grep -cE 'usb-.*analog-stereo|analog-stereo$')
-	bt=$(wpctl status 2>/dev/null | grep -cE 'bluez_output')
-	if [ "$wired" -gt 0 ] && [ "$bt" -gt 0 ]; then
+	read -r wired bt prof <<<"$(audio_graph_outputs)"
+	if [ "${wired:-0}" -gt 0 ] && [ "${bt:-0}" -gt 0 ]; then
 		bad "有线和蓝牙音频输出同时在线"
 		printf '       WirePlumber 会在两者之间换默认设备，PipeWire 重建整个图，\n'
 		printf '       采集线程的句柄就全失效了。表现是：选择框弹出，点共享，然后崩掉\n'
 		printf '       或者立刻退出。\n'
 		printf '       解法：拔掉其中一个，只留一种输出。\n'
+	elif [ "${wired:-0}" -eq 0 ] && [ "${bt:-0}" -eq 0 ]; then
+		warn "没有任何在线音频输出"
+		printf '       接上输出设备再跑一次，这条判断才有意义。\n'
+	elif [ "${bt:-0}" -gt 0 ] && [ -n "${prof:-}" ]; then
+		case "$prof" in
+			*headset*|*hfp*)
+				warn "蓝牙输出在通话档（$prof）"
+				printf '       通话/用麦会让蓝牙切档，PipeWire 一样会重建图：共享会突然\n'
+				printf '       无画面、通话可能挂不断。解法：通话时别用耳机麦，或只留 a2dp。\n' ;;
+			*)
+				ok "只有一种音频输出（有线=$wired 蓝牙=$bt 蓝牙档位=$prof）" ;;
+		esac
 	else
 		ok "只有一种音频输出（有线=$wired 蓝牙=$bt）"
 	fi
